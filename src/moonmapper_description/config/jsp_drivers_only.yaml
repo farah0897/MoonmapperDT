@@ -1,0 +1,62 @@
+# Skjuler avhengige joints fra joint_state_publisher(_gui), slik at
+# kun rocker_left_joint og rocker_right_joint vises som slidere.
+#
+# "factor" og "offset" er harmloese her fordi den reelle koblingen
+# gjoeres i rocker_bogie_kinematics-noden nedstroems. Det eneste
+# poenget er aa registrere disse jointene som "dependent" slik at
+# GUI-en ikke rendrer slider for dem.
+#
+# NB: Navnene matcher URDF-ens faktiske joint-navn (ikke parameter-
+# navnene inne i kinematics-noden).
+
+joint_state_publisher:
+  ros__parameters:
+    use_gui: true
+    rate: 30
+    dependent_joints:
+      bogie_left_joint:
+        parent: rocker_left_joint
+        factor: 0.0
+        offset: 0.0
+      bogie_right_joint:
+        parent: rocker_right_joint
+        factor: 0.0
+        offset: 0.0
+      hengsel_diff_L_joint:
+        parent: rocker_left_joint
+        factor: 0.0
+        offset: 0.0
+      hengsel_diff_R_joint:
+        parent: rocker_right_joint
+        factor: 0.0
+        offset: 0.0
+      rocker_bogie_diff_joint:
+        parent: rocker_left_joint
+        factor: 0.0
+        offset: 0.0
+
+joint_state_publisher_gui:
+  ros__parameters:
+    use_gui: true
+    rate: 30
+    dependent_joints:
+      bogie_left_joint:
+        parent: rocker_left_joint
+        factor: 0.0
+        offset: 0.0
+      bogie_right_joint:
+        parent: rocker_right_joint
+        factor: 0.0
+        offset: 0.0
+      hengsel_diff_L_joint:
+        parent: rocker_left_joint
+        factor: 0.0
+        offset: 0.0
+      hengsel_diff_R_joint:
+        parent: rocker_right_joint
+        factor: 0.0
+        offset: 0.0
+      rocker_bogie_diff_joint:
+        parent: rocker_left_joint
+        factor: 0.0
+        offset: 0.0

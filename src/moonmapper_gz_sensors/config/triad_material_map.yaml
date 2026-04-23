@@ -1,0 +1,40 @@
+materials:
+  # AS7265x channel order (datasheet ATDATA/ATCDATA):
+  #   R,S,T,U,V,W, G,H,I,J,K,L, A,B,C,D,E,F
+  # Center wavelengths (nm):
+  #   610,680,730,760,810,860, 560,585,645,705,900,940, 410,435,460,485,510,535
+  # Key = material label
+  # channels = synthetic reflectance-like vector in [0..1] (18 floats).
+  # Plugin converts these into AS7265x-ish 16-bit counts using gain+integration.
+  regolith:
+    channels: [0.12, 0.15, 0.18, 0.22, 0.20, 0.17,  0.16, 0.18, 0.21, 0.23, 0.22, 0.19,  0.14, 0.13, 0.12, 0.11, 0.10, 0.09]
+  basalt:
+    channels:  [0.06, 0.07, 0.08, 0.09, 0.10, 0.10,  0.08, 0.09, 0.10, 0.11, 0.12, 0.12,  0.07, 0.07, 0.06, 0.06, 0.06, 0.05]
+  metal:
+    channels:  [0.20, 0.22, 0.25, 0.30, 0.35, 0.40,  0.45, 0.50, 0.55, 0.58, 0.60, 0.62,  0.55, 0.53, 0.50, 0.48, 0.45, 0.42]
+  ice:
+    channels:  [0.18, 0.20, 0.22, 0.23, 0.24, 0.25,  0.30, 0.35, 0.40, 0.42, 0.44, 0.45,  0.20, 0.18, 0.16, 0.14, 0.12, 0.10]
+  unknown:
+    channels:  [0.10, 0.10, 0.10, 0.10, 0.10, 0.10,  0.10, 0.10, 0.10, 0.10, 0.10, 0.10,  0.10, 0.10, 0.10, 0.10, 0.10, 0.10]
+
+hit_name_rules:
+  # Order matters: first match wins. `match` is a case-insensitive substring.
+  - match: "moon_arena"
+    material: "regolith"
+  - match: "rock"
+    material: "basalt"
+  - match: "metal"
+    material: "metal"
+  - match: "ice"
+    material: "ice"
+
+zones_xy:
+  # Level 1 fallback when gz-sim doesn't provide hit entity names:
+  # classify by world XY rectangles (meters).
+  # Example zones (edit to match your world):
+  - xmin: -100.0
+    xmax:  100.0
+    ymin: -100.0
+    ymax:  100.0
+    material: "regolith"
+

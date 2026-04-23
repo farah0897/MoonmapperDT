@@ -1,0 +1,131 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <!--
+    Shared macros for MoonMapper description.
+
+    Coordinate convention (REP-103):
+      - X forward, Y left, Z up
+
+    NOTE:
+      Many origins/lengths here are placeholders. Search for "TODO_REPLACE"
+      and replace values with real measurements from CAD/Blender.
+  -->
+
+  <!-- xacro provides a global `pi`; do not redefine -->
+
+  <!-- ========= Inertial helpers ========= -->
+  <xacro:macro name="inertial_box" params="mass x y z">
+    <!-- Solid box approximation. Dimensions are full lengths (meters). -->
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="${mass}"/>
+      <inertia
+        ixx="${(1.0/12.0)*mass*(y*y + z*z)}"
+        ixy="0.0"
+        ixz="0.0"
+        iyy="${(1.0/12.0)*mass*(x*x + z*z)}"
+        iyz="0.0"
+        izz="${(1.0/12.0)*mass*(x*x + y*y)}"/>
+    </inertial>
+  </xacro:macro>
+
+  <xacro:macro name="inertial_cylinder" params="mass radius length axis">
+    <!--
+      Solid cylinder approximation.
+      URDF cylinder geometry is aligned with Z, but inertia can be aligned by axis:
+        - axis="z" for standard URDF cylinder
+        - axis="y" for wheel-like cylinder (axle along Y)
+    -->
+    <xacro:property name="I_axial" value="${0.5*mass*radius*radius}"/>
+    <xacro:property name="I_radial" value="${(1.0/12.0)*mass*(3.0*radius*radius + length*length)}"/>
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="${mass}"/>
+      <xacro:if value="${axis == 'z'}">
+        <inertia ixx="${I_radial}" ixy="0" ixz="0" iyy="${I_radial}" iyz="0" izz="${I_axial}"/>
+      </xacro:if>
+      <xacro:if value="${axis == 'y'}">
+        <inertia ixx="${I_radial}" ixy="0" ixz="0" iyy="${I_axial}" iyz="0" izz="${I_radial}"/>
+      </xacro:if>
+      <xacro:if value="${axis == 'x'}">
+        <inertia ixx="${I_axial}" ixy="0" ixz="0" iyy="${I_radial}" iyz="0" izz="${I_radial}"/>
+      </xacro:if>
+    </inertial>
+  </xacro:macro>
+
+  <!-- ========= Geometry helpers ========= -->
+  <xacro:macro name="mesh_visual" params="mesh scale xyz:='0 0 0' rpy:='0 0 0' material:='moonmapper_light_gray'">
+    <visual>
+      <origin xyz="${xyz}" rpy="${rpy}"/>
+      <geometry>
+        <mesh filename="${mesh}" scale="${scale} ${scale} ${scale}"/>
+      </geometry>
+      <material name="${material}"/>
+    </visual>
+  </xacro:macro>
+
+  <xacro:macro name="mesh_collision" params="mesh scale xyz:='0 0 0' rpy:='0 0 0'">
+    <collision>
+      <origin xyz="${xyz}" rpy="${rpy}"/>
+      <geometry>
+        <mesh filename="${mesh}" scale="${scale} ${scale} ${scale}"/>
+      </geometry>
+    </collision>
+  </xacro:macro>
+
+  <!-- ========= Wheel macro (reused 6x) ========= -->
+  <xacro:macro
+    name="moonmapper_wheel"
+    params="
+      prefix
+      parent
+      name
+      xyz
+      rpy:='0 0 0'
+      radius
+      width
+      mass:='0.5'
+      visual_mesh:=''
+      collision_mesh:=''
+      mesh_scale:='1.0'
+      material:='moonmapper_dark_gray'">
+
+    <joint name="${prefix}${name}_joint" type="continuous">
+      <parent link="${parent}"/>
+      <child link="${prefix}${name}_link"/>
+      <origin xyz="${xyz}" rpy="${rpy}"/>
+      <!-- Wheel axle along Y (left-right). Rotation about Y -->
+      <axis xyz="0 1 0"/>
+      <limit effort="50.0" velocity="20.0"/>
+      <dynamics damping="0.2" friction="0.0"/>
+    </joint>
+
+    <link name="${prefix}${name}_link">
+      <!-- Mesh-only wheel visuals/collision -->
+      <xacro:mesh_visual mesh="${visual_mesh}" scale="${mesh_scale}" material="${material}"/>
+      <xacro:mesh_collision mesh="${collision_mesh if collision_mesh != '' else visual_mesh}" scale="${mesh_scale}"/>
+
+      <xacro:inertial_cylinder mass="${mass}" radius="${radius}" length="${width}" axis="y"/>
+    </link>
+  </xacro:macro>
+
+  <!-- ========= Small sensor frame macro ========= -->
+  <xacro:macro name="simple_sensor_link" params="name mass:='0.05' x:='0.04' y:='0.04' z:='0.02' material:='moonmapper_black'">
+    <link name="${name}">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <box size="${x} ${y} ${z}"/>
+        </geometry>
+        <material name="${material}"/>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <box size="${x} ${y} ${z}"/>
+        </geometry>
+      </collision>
+      <xacro:inertial_box mass="${mass}" x="${x}" y="${y}" z="${z}"/>
+    </link>
+  </xacro:macro>
+</robot>

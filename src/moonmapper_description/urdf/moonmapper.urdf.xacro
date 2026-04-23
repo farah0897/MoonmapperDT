@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+<!-- Entry-point xacro for MoonMapper rover -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="moonmapper">
+  <!-- Keep a stable entry-point filename for launches/tools -->
+  <xacro:include filename="$(find moonmapper_description)/urdf/moonmapper_rover.urdf.xacro"/>
+</robot>

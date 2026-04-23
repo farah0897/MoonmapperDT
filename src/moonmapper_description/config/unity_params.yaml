@@ -1,0 +1,35 @@
+# Parametre for Unity <-> ROS 2-integrasjon
+#
+# - ROS-TCP-Endpoint: TCP-server som Unity ROS-TCP-Connector kobler seg til.
+#   ROS_IP:    IP-en Unity skal koble seg mot (0.0.0.0 = alle grensesnitt)
+#   ROS_TCP_PORT: Porten Endpoint lytter paa. Maa matche Unity-siden
+#                 (ROS Settings -> Connection -> Protocol + Port).
+#
+# - Unity-kommando-bro (unity_cmd_vel_node.py): omsetter /cmd_vel til
+#   seks hjul-velocities for Unity.
+
+ros_tcp_endpoint:
+  ros__parameters:
+    ROS_IP: "0.0.0.0"
+    ROS_TCP_PORT: 10000
+
+unity_cmd_vel_bridge:
+  ros__parameters:
+    # Matcher mesh-geometrien (rocker-origin y = +/-14.8mm, hjulradius 7.3mm)
+    wheel_separation:     0.030
+    wheel_radius:         0.0073
+
+    # Hastighetsgrenser tilpasset en 5cm-lang rover.
+    # NB: siden wheel_separation bare er 3 cm, maa max_angular_velocity
+    # vaere relativt stor for at svinger skal gi synlig forskjell i
+    # hjulfart (delta_v = w * L). Med w=2 rad/s og L=0.03 m faar vi
+    # ~6 cm/s differens, som er godt synlig.
+    max_linear_velocity:  0.05   # m/s
+    max_angular_velocity: 2.0    # rad/s
+
+    # Hvor ofte vi sender hjulkommando til Unity
+    publish_rate:         50.0   # Hz
+
+    # Watchdog: hvis ingen /cmd_vel kommer inn i dette intervallet
+    # faller hjulhastigheten til 0.
+    cmd_vel_timeout:      0.5    # s

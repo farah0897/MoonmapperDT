@@ -1,0 +1,388 @@
+<?xml version="1.0"?>
+
+
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="moonmapper_gz">
+
+  <!-- Grunnmodell: samme fil som RViz bruker -->
+  <xacro:include filename="$(find moonmapper_description)/urdf/moonmapper_rover.urdf.xacro"/>
+
+  <!-- Kontakt/friksjons-parametere for hjul. mu1/mu2 er relativt hoeye fordi
+       hjul-masse er kun ~0.02 kg pr hjul; lav friksjon ville gi sludging paa
+       bakken. kp=1e7 holder en 2.5 kg rover uten naalegging.-->
+  <xacro:property name="wheel_mu1"      value="1.2"/>
+  <xacro:property name="wheel_mu2"      value="1.0"/>
+  <!-- ODE bruker kp/kd direkte for kontaktfjær. For en 2kg mikro-rover er
+       1e7 altfor stivt og gir impuls-krefter som kan gjøre joints ustabile.
+       3e5 / 50 er et stabilt utgangspunkt ved 1ms step. -->
+  <xacro:property name="wheel_kp"       value="300000.0"/>
+  <xacro:property name="wheel_kd"       value="50.0"/>
+
+  <!-- Macro: kontakt-/friksjons-parametere for hjul-link -->
+  <xacro:macro name="wheel_gazebo" params="link">
+    <gazebo reference="${link}">
+      <mu1>${wheel_mu1}</mu1>
+      <mu2>${wheel_mu2}</mu2>
+      <kp>${wheel_kp}</kp>
+      <kd>${wheel_kd}</kd>
+      <minDepth>0.0005</minDepth>
+      <maxVel>0.5</maxVel>
+      <fdir1>1 0 0</fdir1>
+      <selfCollide>false</selfCollide>
+    </gazebo>
+  </xacro:macro>
+
+  <xacro:wheel_gazebo link="wheel_l1_link"/>
+  <xacro:wheel_gazebo link="wheel_l2_link"/>
+  <xacro:wheel_gazebo link="wheel_l3_link"/>
+  <xacro:wheel_gazebo link="wheel_r1_link"/>
+  <xacro:wheel_gazebo link="wheel_r2_link"/>
+  <xacro:wheel_gazebo link="wheel_r3_link"/>
+
+  <!-- Passiv damping for rocker- og bogie-joints (fysikken slipper
+       ikke daglige svingninger loese naar ingen styrer dem) -->
+  <gazebo reference="rocker_left_joint">
+    <implicitSpringDamper>true</implicitSpringDamper>
+    <provideFeedback>true</provideFeedback>
+  </gazebo>
+  <gazebo reference="rocker_right_joint">
+    <implicitSpringDamper>true</implicitSpringDamper>
+    <provideFeedback>true</provideFeedback>
+  </gazebo>
+  <gazebo reference="bogie_left_joint">
+    <implicitSpringDamper>true</implicitSpringDamper>
+  </gazebo>
+  <gazebo reference="bogie_right_joint">
+    <implicitSpringDamper>true</implicitSpringDamper>
+  </gazebo>
+
+  <!-- Diff-staven er den eneste revolute joint paa top-linkage-siden.
+       Den drives av RockerBogieDifferential-pluginen (aux-PD) mot en
+       affin funksjon av rocker-vinkene. -->
+  <gazebo reference="rocker_bogie_diff_joint">
+    <implicitSpringDamper>true</implicitSpringDamper>
+    <provideFeedback>true</provideFeedback>
+  </gazebo>
+
+  <!-- Base-link self-collision av: hindrer at interne ledd kolliderer med
+       hverandre gjennom chassiset (gir gratis stabilitet i Gazebo). -->
+  <gazebo reference="base_link">
+    <selfCollide>false</selfCollide>
+  </gazebo>
+
+  <!-- =============================================================== -->
+  <!-- ros2_control: hjul som velocity-interface                       -->
+  <!-- =============================================================== -->
+  <ros2_control name="MoonMapperSystem" type="system">
+    <hardware>
+      <plugin>gz_ros2_control/GazeboSimSystem</plugin>
+    </hardware>
+
+    <xacro:macro name="wheel_iface" params="joint">
+      <joint name="${joint}">
+        <command_interface name="velocity">
+          <param name="min">-30.0</param>
+          <param name="max"> 30.0</param>
+        </command_interface>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+        <state_interface name="effort"/>
+      </joint>
+    </xacro:macro>
+
+    <xacro:wheel_iface joint="wheel_l1_joint"/>
+    <xacro:wheel_iface joint="wheel_l2_joint"/>
+    <xacro:wheel_iface joint="wheel_l3_joint"/>
+    <xacro:wheel_iface joint="wheel_r1_joint"/>
+    <xacro:wheel_iface joint="wheel_r2_joint"/>
+    <xacro:wheel_iface joint="wheel_r3_joint"/>
+
+    <!-- Passive joints eksponeres kun som state (lese-only) slik at
+         joint_state_broadcaster kan publisere dem for TF/RViz. -->
+    <joint name="rocker_left_joint"><state_interface name="position"/><state_interface name="velocity"/></joint>
+    <joint name="rocker_right_joint"><state_interface name="position"/><state_interface name="velocity"/></joint>
+    <joint name="bogie_left_joint"><state_interface name="position"/><state_interface name="velocity"/></joint>
+    <joint name="bogie_right_joint"><state_interface name="position"/><state_interface name="velocity"/></joint>
+    <joint name="rocker_bogie_diff_joint"><state_interface name="position"/><state_interface name="velocity"/></joint>
+  </ros2_control>
+
+  <!-- =============================================================== -->
+  <!-- Gazebo system plugins                                           -->
+  <!-- =============================================================== -->
+  <gazebo>
+    <!-- gz_ros2_control bruker ROS-parametere lastet ved siden av noden. -->
+    <plugin filename="gz_ros2_control-system"
+            name="gz_ros2_control::GazeboSimROS2ControlPlugin">
+      <parameters>$(find moonmapper_description)/config/wheel_controllers.yaml</parameters>
+    </plugin>
+
+    <!-- ========================================================= -->
+    <!-- VIRTUELL DIFFERENSIAL                                     -->
+    <!--                                                           -->
+    <!-- Den lukkede sloeyfen (stang-tupp <-> rocker_bogie_diff)   -->
+    <!-- kan ikke representeres i URDF-treet. Pluginet lukker      -->
+    <!-- sloeyfen dynamisk ved aa legge PD-moment paa summen av    -->
+    <!-- rocker-vinkene, akkurat slik en ekte walking-beam gjoer:  -->
+    <!--                                                           -->
+    <!--   tau_L = tau_R = -kp*(qL+qR) - kd*(dqL+dqR)              -->
+    <!--                                                           -->
+    <!-- I tillegg driver aux-PD rocker_bogie_diff_joint mot       -->
+    <!-- q_diff* = 0.82 * qR  (rvizens mimic-ratio).               -->
+    <!--                                                           -->
+    <!-- GAIN-ANALYSE (rocker I=4e-4 kgm^2 etter oppgradering):    -->
+    <!--   kp=2.0: omega_n = sqrt(2/4e-4) = 70 rad/s                -->
+    <!--   kd_crit = 2*sqrt(kp*I) = 0.057                            -->
+    <!--   Vi bruker kd=0.2 (overdampet).                           -->
+    <!--   max_torque=0.2 Nm -> maks reaksjon paa chassis ~16 rad/s^2 -->
+    <!--   (under tyngdeakselerasjonen, saa roveren blir ikke loeftet) -->
+    <!-- ========================================================= -->
+    <xacro:if value="$(arg enable_diff_plugin)">
+    <plugin filename="libmoonmapper_rocker_bogie_differential.so"
+            name="moonmapper::RockerBogieDifferential">
+      <left_rocker_joint>rocker_left_joint</left_rocker_joint>
+      <right_rocker_joint>rocker_right_joint</right_rocker_joint>
+      <diff_joint>rocker_bogie_diff_joint</diff_joint>
+      <!-- Tomme navn = pluginet ignorerer disse aux-jointene. -->
+      <hengsel_left_joint></hengsel_left_joint>
+      <hengsel_right_joint></hengsel_right_joint>
+
+      <!-- Primaer-PD: sum-constraint paa rockerne (walking-beam). -->
+      <kp>2.0</kp>
+      <kd>0.2</kd>
+      <target_sum>0.0</target_sum>
+      <max_torque>0.2</max_torque>
+
+      <!-- Kinematikk for diff-staven:
+             q_diff* = k_diff_L*qL + k_diff_R*qR + k_diff_0
+           Med sum-constraint qL=-qR og RViz-mimic phi=0.82*qR faar vi:
+             q_diff* = 0.82*qR  ->  k_diff_L=0, k_diff_R=0.82           Snu fortegn paa k_diff_R hvis staven dreier motsatt av rockeren. -->
+      <k_diff_L>0.0</k_diff_L>
+      <k_diff_R>0.82</k_diff_R>
+      <k_diff_0>0.0</k_diff_0>
+
+      <!-- Aux-PD: diff-staven er ~5g, så gainene er svært lave. -->
+      <kp_aux>0.2</kp_aux>
+      <kd_aux>0.02</kd_aux>
+      <max_torque_aux>0.02</max_torque_aux>
+    </plugin>
+    </xacro:if>
+
+    <!-- Publiser joint-state internt til gz-transport (brygges via ros_gz_bridge) -->
+    <plugin filename="gz-sim-joint-state-publisher-system"
+            name="gz::sim::systems::JointStatePublisher">
+    </plugin>
+
+    <!-- Pose/odom ground-truth (for sanity) -->
+    <plugin filename="gz-sim-pose-publisher-system"
+            name="gz::sim::systems::PosePublisher">
+      <publish_link_pose>false</publish_link_pose>
+      <publish_collision_pose>false</publish_collision_pose>
+      <publish_visual_pose>false</publish_visual_pose>
+      <publish_nested_model_pose>true</publish_nested_model_pose>
+    </plugin>
+
+    <!-- ========================================================= -->
+    <!-- Level 1: Synthetic Triad spectroscopy sensors (raycast)    -->
+    <!-- ========================================================= -->
+    <plugin filename="libmoonmapper_triad_spectroscopy.so"
+            name="moonmapper::TriadSpectroscopy">
+      <enable>true</enable>
+      <update_rate_hz>20</update_rate_hz>
+      <max_distance>0.12</max_distance>
+      <noise_stddev>0.02</noise_stddev>
+      <channels>18</channels>
+
+      <sensor1_link>triad_sensor_1_link</sensor1_link>
+      <sensor2_link>triad_sensor_2_link</sensor2_link>
+
+      <topic1>/triad_sensor_1/spectrum</topic1>
+      <topic2>/triad_sensor_2/spectrum</topic2>
+
+      <material_map_yaml>$(find moonmapper_gz_sensors)/config/triad_material_map.yaml</material_map_yaml>
+    </plugin>
+  </gazebo>
+
+  <!-- =============================================================== -->
+  <!-- SENSORER                                                        -->
+  <!--                                                                 -->
+  <!-- ROBUST STRATEGI: Alle sensorer festes direkte paa base_link     -->
+  <!-- med eksplisitte <pose>-offsets, slik at fixed-joint-lumping     -->
+  <!-- ikke paavirker sensor-posen. TF-frames (imu_link, stereo_*)     -->
+  <!-- eksisterer fortsatt i URDF-en og leveres av robot_state_pub-    -->
+  <!-- lisher, og <gz_frame_id> sikrer at de publiserte meldingene     -->
+  <!-- stamples med riktig frame.                                      -->
+  <!--                                                                 -->
+  <!-- Pose-offsets maa matche URDF-TF-kjeden for konsistens mellom    -->
+  <!-- sim og TF.                                                      -->
+  <!--   imu_link:                ( 0.001234, -0.000060, 0.003194)     -->
+  <!-- NOTE: sensor <pose> below MUST match the URDF TF chain. -->
+  <!-- URDF positions (base_link frame): -->
+  <!--   imu_link:                ( 0.001234, -0.000060, 0.003194)     -->
+  <!--   stereo_camera_link:      (-0.166163, -0.008930, 0.069183)      -->
+  <!--   stereo_left_camera_link: (-0.190341,  0.015585, 0.062414)      -->
+  <!--   stereo_right_camera_link:(-0.190240, -0.040964, 0.063340)      -->
+  <!--   depth_camera_link:       (-0.190421, -0.014424, 0.061987)      -->
+  <!--   mikroskop_link:          (-0.091849,-0.001046,-0.006375)       -->
+  <!-- =============================================================== -->
+
+  <gazebo reference="base_link">
+
+    <!-- === IMU === -->
+    <sensor name="imu_sensor" type="imu">
+      <pose>0.001234 -0.000060 0.003194 0 0 0</pose>
+      <always_on>true</always_on>
+      <update_rate>100</update_rate>
+      <topic>imu</topic>
+      <gz_frame_id>imu_link</gz_frame_id>
+      <imu>
+        <angular_velocity>
+          <x><noise type="gaussian"><mean>0.0</mean><stddev>0.002</stddev></noise></x>
+          <y><noise type="gaussian"><mean>0.0</mean><stddev>0.002</stddev></noise></y>
+          <z><noise type="gaussian"><mean>0.0</mean><stddev>0.002</stddev></noise></z>
+        </angular_velocity>
+        <linear_acceleration>
+          <x><noise type="gaussian"><mean>0.0</mean><stddev>0.017</stddev></noise></x>
+          <y><noise type="gaussian"><mean>0.0</mean><stddev>0.017</stddev></noise></y>
+          <z><noise type="gaussian"><mean>0.0</mean><stddev>0.017</stddev></noise></z>
+        </linear_acceleration>
+      </imu>
+    </sensor>
+
+    <!-- === Venstre kamera (peker +X i base-frame) ===
+         Oppløsning 320x240 for aa la GPU-en klare begge kameraer;
+         oek til 640x480 naar GPU er ledig. -->
+    <sensor name="stereo_left_camera" type="camera">
+      <!-- Rotate 180deg yaw so camera faces +X in base_link -->
+      <pose>-0.190341 0.015585 0.062414 0 0 3.14159</pose>
+      <always_on>true</always_on>
+      <update_rate>15</update_rate>
+      <topic>stereo/left/image_raw</topic>
+      <gz_frame_id>stereo_left_optical_frame</gz_frame_id>
+      <camera>
+        <horizontal_fov>1.2217305</horizontal_fov> <!-- 70 deg -->
+        <image>
+          <width>320</width>
+          <height>240</height>
+          <format>R8G8B8</format>
+        </image>
+        <clip>
+          <near>0.005</near>
+          <far>50.0</far>
+        </clip>
+        <noise>
+          <type>gaussian</type>
+          <mean>0.0</mean>
+          <stddev>0.005</stddev>
+        </noise>
+        <optical_frame_id>stereo_left_optical_frame</optical_frame_id>
+      </camera>
+    </sensor>
+
+    <!-- === Hoeyre kamera === -->
+    <sensor name="stereo_right_camera" type="camera">
+      <!-- Rotate 180deg yaw so camera faces +X in base_link -->
+      <pose>-0.190240 -0.040964 0.063340 0 0 3.14159</pose>
+      <always_on>true</always_on>
+      <update_rate>15</update_rate>
+      <topic>stereo/right/image_raw</topic>
+      <gz_frame_id>stereo_right_optical_frame</gz_frame_id>
+      <camera>
+        <horizontal_fov>1.2217305</horizontal_fov>
+        <image>
+          <width>320</width>
+          <height>240</height>
+          <format>R8G8B8</format>
+        </image>
+        <clip>
+          <near>0.005</near>
+          <far>50.0</far>
+        </clip>
+        <noise>
+          <type>gaussian</type>
+          <mean>0.0</mean>
+          <stddev>0.005</stddev>
+        </noise>
+        <optical_frame_id>stereo_right_optical_frame</optical_frame_id>
+      </camera>
+    </sensor>
+
+    <!-- === RGB-D / Depth-kamera ===
+         type="rgbd_camera" publiserer RGB-bilde, depth-bilde OG
+         point cloud samtidig. Plassert midt mellom de to stereo-
+         sensorene (y=0) paa samme hoeyde.
+         Topics fra gz-sim (med <topic>depth_camera</topic>):
+           /depth_camera/image        (gz.msgs.Image)
+           /depth_camera/depth_image  (gz.msgs.Image, 32FC1)
+           /depth_camera/points       (gz.msgs.PointCloudPacked)
+           /depth_camera/camera_info  (gz.msgs.CameraInfo)
+         Near-planet er hardt begrenset til 0.1 m paa moderne GPU-
+         rendere (ogre2), sa vi setter 0.05 -> clampes til 0.1.
+         Den er lav nok for roveren vaar. -->
+    <sensor name="depth_camera" type="rgbd_camera">
+      <!-- Rotate 180deg yaw so camera faces +X in base_link -->
+      <pose>-0.190421 -0.014424 0.061987 0 0 3.14159</pose>
+      <always_on>true</always_on>
+      <update_rate>15</update_rate>
+      <topic>depth_camera</topic>
+      <gz_frame_id>depth_camera_optical_frame</gz_frame_id>
+      <camera>
+        <horizontal_fov>1.2217305</horizontal_fov> <!-- 70 deg, som stereo -->
+        <image>
+          <width>320</width>
+          <height>240</height>
+          <format>R8G8B8</format>
+        </image>
+        <clip>
+          <near>0.05</near>
+          <far>10.0</far>
+        </clip>
+        <depth_camera>
+          <clip>
+            <near>0.05</near>
+            <far>10.0</far>
+          </clip>
+        </depth_camera>
+        <optical_frame_id>depth_camera_optical_frame</optical_frame_id>
+      </camera>
+    </sensor>
+
+    <!-- === Mikroskop (Level 1): nede-pekende inspeksjonskamera ===
+         Kameraet festes direkte paa base_link (robust mot fixed-joint lumping),
+         men frame-id settes til mikroskop_optical_frame som finnes i URDF-TF.
+         Gazebo-kamera peker langs +X i sensorrammen. Vi setter orienteringen
+         til ROS optical-konvensjon (x=right, y=down, z=forward) slik at bildet
+         ikke blir "sideways", og slik at kamera peker ned mot bakken. -->
+    <sensor name="microscope_camera" type="camera">
+      <!-- base_link -> mikroskop_link (posisjon). Roter sensoren slik at kamera peker ned (mot -Z i base_link). -->
+      <pose>-0.091849 -0.001046 -0.012375 0 1.57079632679 0</pose>
+      <always_on>true</always_on>
+      <update_rate>10</update_rate>
+      <topic>microscope/image_raw</topic>
+      <gz_frame_id>mikroskop_optical_frame</gz_frame_id>
+      <camera>
+        <horizontal_fov>1.0471975512</horizontal_fov> <!-- 60 deg -->
+        <image>
+          <width>320</width>
+          <height>240</height>
+          <format>R8G8B8</format>
+        </image>
+        <clip>
+          <near>0.005</near>
+          <far>0.25</far>
+        </clip>
+        <noise>
+          <type>gaussian</type>
+          <mean>0.0</mean>
+          <stddev>0.003</stddev>
+        </noise>
+        <optical_frame_id>mikroskop_optical_frame</optical_frame_id>
+      </camera>
+    </sensor>
+
+  </gazebo>
+
+  <!-- Kamerahuset er ren visual; la den lumpes som vanlig med base_link -->
+  <gazebo reference="stereo_camera_link">
+    <selfCollide>false</selfCollide>
+  </gazebo>
+
+</robot>

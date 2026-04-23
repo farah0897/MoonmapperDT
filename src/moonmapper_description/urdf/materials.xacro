@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <!-- Simple reusable materials for RViz -->
+  <material name="moonmapper_black">
+    <color rgba="0.12 0.12 0.12 1.0"/>
+  </material>
+
+  <material name="moonmapper_dark_gray">
+    <color rgba="0.25 0.25 0.25 1.0"/>
+  </material>
+
+  <material name="moonmapper_light_gray">
+    <color rgba="0.65 0.65 0.65 1.0"/>
+  </material>
+
+  <material name="moonmapper_orange">
+    <color rgba="0.95 0.45 0.05 1.0"/>
+  </material>
+</robot>
