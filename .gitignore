@@ -6,3 +6,33 @@ __pycache__/
 *.pyc
 .DS_Store
 .vscode/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# ROS2 build outputs
+build/
+install/
+log/
+
+# ML datasets
+ml/datasets/raw/
+ml/datasets/processed/
+
+# Large model artifacts
+ml/models/*.joblib
+ml/models/*.pkl
+ml/models/*.pt
+ml/models/*.pth
+ml/models/*.onnx
+src/moonmapper_ml/models/*.joblib
+src/moonmapper_ml/models/*.pkl
+src/moonmapper_ml/models/*.pt
+src/moonmapper_ml/models/*.pth
+src/moonmapper_ml/models/*.onnx
+
+# Jupyter
+.ipynb_checkpoints/

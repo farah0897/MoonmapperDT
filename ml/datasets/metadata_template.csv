@@ -1,0 +1,3 @@
+sample_id,date,time,operator,label_material,label_object,sand_type,sand_condition,object_condition,position_id,angle_id,run_id,triad_file,image_file,vehicle_mode,speed,quality,quality_notes
+S0001,2026-04-28,14:32,operator_name,ukjent,1krone,torr_sand,torr,ren,P01,A01,R01,triad_raw/S0001_triad_raw.csv,images/S0001_microscope.jpg,static,0,good,"klart bilde og stabil måling"
+

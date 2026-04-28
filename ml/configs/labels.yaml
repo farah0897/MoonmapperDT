@@ -1,0 +1,18 @@
+object_classes:
+  - aluminium_1krone
+  - jern_stang
+  - staal_10krone
+  - titan_skru
+
+material_classes:
+  - aluminium
+  - jern
+  - staal
+  - titan
+  - ukjent
+
+# Vi starter med label_object som primary_label fordi objektene vi tester
+# kan være legeringer eller ha belegg. Hvis materialet ikke er verifisert,
+# skal label_material være ukjent.
+primary_label: label_object
+
