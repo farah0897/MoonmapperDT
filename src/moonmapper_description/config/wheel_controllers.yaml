@@ -1,10 +1,10 @@
 # ros2_control-konfigurasjon for MoonMapper i Gazebo Sim 8.
 #
 # * controller_manager kjøres IN-PROCESS inne i gz_ros2_control-plugin,
-#   saa ingen separat ros2 run controller_manager er noedvendig.
+#   saa ingen separat ros2 run controller_manager er nødvendig.
 # * joint_state_broadcaster publisher /joint_states med alle joints
 #   (inkl. passive rockers/bogies).
-# * diff_drive_controller tar en standard Twist paa /cmd_vel og
+# * diff_drive_controller tar en standard Twist på /cmd_vel og
 #   omsetter til hjulhastigheter for begge sider.
 #
 # Hvis du vil ha uavhengig kontroll per hjul (6 WD), erstatter du
@@ -25,7 +25,7 @@ diff_drive_controller:
   ros__parameters:
     use_sim_time: true
 
-    # Alle tre hjul paa hver side drives synkront som én "side"
+    # Alle tre hjul på hver side drives synkront som en "side"
     left_wheel_names:  ["wheel_l1_joint", "wheel_l2_joint", "wheel_l3_joint"]
     right_wheel_names: ["wheel_r1_joint", "wheel_r2_joint", "wheel_r3_joint"]
 

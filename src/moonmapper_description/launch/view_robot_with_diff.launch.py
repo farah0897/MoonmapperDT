@@ -48,8 +48,10 @@ def generate_launch_description() -> LaunchDescription:
         _arg("right_rocker", "rocker_right_joint",     "URDF-navn for hoegre rocker."),
         _arg("left_bogie",   "bogie_left_joint",       "URDF-navn for venstre bogie."),
         _arg("right_bogie",  "bogie_right_joint",      "URDF-navn for hoegre bogie."),
-        _arg("left_hinge",   "hengsel_diff_L_joint",   "URDF-navn for venstre diff-hengsel."),
-        _arg("right_hinge",  "hengsel_diff_R_joint",   "URDF-navn for hoegre diff-hengsel."),
+        # Hengsel-joints finnes ikke i dagens moonmapper_rover.urdf.xacro.
+        # Bruk tom streng som default; sett navn her hvis du har hengsel-ledd i URDF-en din.
+        _arg("left_hinge",   "",                      "URDF-navn for venstre diff-hengsel (valgfri)."),
+        _arg("right_hinge",  "",                      "URDF-navn for hoegre diff-hengsel (valgfri)."),
         _arg("diff_joint",   "rocker_bogie_diff_joint","URDF-navn for diff-stangen."),
 
         # --- Diff gains:  k_L*L + k_R*R + k0  (default (L+R)/2) ---
@@ -82,6 +84,7 @@ def generate_launch_description() -> LaunchDescription:
             " use_gazebo:=",       LaunchConfiguration("use_gazebo"),
             " use_ros2_control:=", LaunchConfiguration("use_ros2_control"),
             " mesh_scale:=",       LaunchConfiguration("mesh_scale"),
+            " enable_urdf_mimic:=true",
         ]),
         value_type=str,
     )

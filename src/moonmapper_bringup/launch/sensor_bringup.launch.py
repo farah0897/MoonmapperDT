@@ -22,7 +22,7 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("world", default_value=default_world),
         DeclareLaunchArgument("use_rviz", default_value="true"),
         # Roveren er ~5 cm; 0.05 m er et tryggere default-spawn for å unngå "flytende" start.
-        DeclareLaunchArgument("spawn_z", default_value="0.05"),
+        DeclareLaunchArgument("spawn_z", default_value="0.15"),
         DeclareLaunchArgument("enable_diff_plugin", default_value="true"),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(

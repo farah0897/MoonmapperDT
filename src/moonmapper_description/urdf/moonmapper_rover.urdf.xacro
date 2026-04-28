@@ -4,6 +4,9 @@
   <!-- Author joint limits in degrees; URDF consumes radians -->
   <xacro:property name="deg" value="0.017453292519943295"/> <!-- pi/180 -->
   <!-- NOTE: Keeping this file argument-free for simple launching. -->
+  <!-- URDF mimic-tagging is intended ONLY for RViz / kinematic visualization.
+       In Gazebo, mimic can fight physics constraints / plugins and stiffen the suspension. -->
+  <xacro:arg name="enable_urdf_mimic" default="true"/>
 
   <!-- Base footprint frame for RViz / navigation stacks -->
   <link name="base_footprint"/>
@@ -25,10 +28,12 @@
       </material>
     </visual>
     <collision>
+      <!-- Stabil sim-collision: primitiv boks i stedet for detaljert STL.
+           Hindrer at skarpe detaljer tar bakken og “tipper” roveren før
+           rocker/bogie får jobbe. Størrelse fra notat i filen: 48x25x18mm. -->
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="package://moonmapper_description/meshes/visual/robot_base.stl"
-              scale="1 1 1"/>
+        <box size="0.048 0.025 0.018"/>
       </geometry>
     </collision>
     <!-- Gazebo krever inertial paa enhver dynamisk link.
@@ -55,12 +60,12 @@
          - wheel_[lr][123]_joint (continuous, Y)
 
        Feste-braketten + mellomstykket + stang er STIV-SVEISET til rockeren
-       (fixed). Dette er fysisk korrekt: push-arm-strukturen paa toppen av
+       (fixed). Dette er fysisk korrekt: push-arm-strukturen på toppen av
        en rocker har ingen egen frihetsgrad relativt til rockeren.
 
        Den lukkede sloeyfen mellom stang-tuppen og diff-staven i chassiset
-       lar seg IKKE representere i URDF (trestruktur). Vi loeser det ved:
-         * RViz: mimic-tagger paa rocker_left_joint og rocker_bogie_diff_joint
+       lar seg IKKE representere i URDF (trestruktur). Vi løser det ved:
+         * RViz: mimic-tagger på rocker_left_joint og rocker_bogie_diff_joint
          * Gazebo: RockerBogieDifferential-pluginen (PD-constraint)
        ===================================================================== -->
 
@@ -68,7 +73,7 @@
        HOEYRE SIDE
        ===================================================================== -->
 
-  <!-- Rocker (revolute) festet direkte paa chassiset.
+  <!-- Rocker (revolute) festet direkte på chassiset.
        Origin = gammel "feste_rocker_bogie" fixed-offset + gammel rocker-offset:
          (0.014227,-0.065999,0.021756) + (-0.013717,-0.001277,-0.007986)
          = (0.000510,-0.067276,0.013770) -->
@@ -106,7 +111,7 @@
     <origin xyz="0.014227 -0.065999 0.021756" rpy="0 0 0"/>
     <axis xyz="0 1 0"/>
     <dynamics damping="0.02" friction="0.005"/>
-    <limit lower="${-30*deg}" upper="${30*deg}" effort="100" velocity="2.0"/>
+    <limit lower="-0.133" upper="0.133" effort="100" velocity="6.0"/>
   </joint>
 
 
@@ -130,10 +135,15 @@
                izz="1e-8"/>
     </inertial>
   </link>
-  <joint name="feste_mellom_feste_og_stang_right_joint" type="fixed">
-    <parent link="rocker_right_link"/>
+  <joint name="feste_mellom_feste_og_stang_right_joint" type="prismatic">
+    <parent link="base_link"/>
     <child link="feste_mellom_feste_og_stang_right_link"/>
-    <origin xyz="-0.006290 -0.001307 0.054591" rpy="0 0 0"/>
+    <origin xyz="0.013913 -0.067245 0.076373" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+    <xacro:if value="$(arg enable_urdf_mimic)">
+      <mimic joint="rocker_bogie_diff_joint" multiplier="0.05" offset="0.0"/>
+    </xacro:if>
+     <limit lower="${-1*deg}" upper="${1*deg}" effort="50" velocity="3.0"/>
   </joint>
 
   <!-- Staget er sveiset fast i mellomstykket. Tupp-enden som fysisk skal
@@ -158,10 +168,15 @@
                izz="1e-8"/>
     </inertial>
   </link>
-  <joint name="stang_right_joint" type="fixed">
+  <joint name="stang_right_joint" type="prismatic">
     <parent link="feste_mellom_feste_og_stang_right_link"/>
     <child link="stang_right_link"/>
-    <origin xyz="-0.095753 -0.000079 0.000059" rpy="0 0 0"/>
+    <origin xyz="-0.101730 -0.000140 0.000033" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+    <xacro:if value="$(arg enable_urdf_mimic)">
+      <mimic joint="feste_mellom_feste_og_stang_right_joint" multiplier="0.05" offset="0.0"/>
+    </xacro:if>
+    <limit lower="${-1*deg}" upper="${1*deg}" effort="50" velocity="3.0"/>
   </joint>
 
   <!-- Bogie (revolute, Y) parentet paa ROCKEREN, ikke paa braketten.
@@ -202,7 +217,7 @@
     <origin xyz="0.087545 -0.025322 -0.050495" rpy="0 0 0"/>
     <axis xyz="0 1 0"/>
     <dynamics damping="0.01" friction="0.003"/>
-    <limit lower="${-40*deg}" upper="${40*deg}" effort="100" velocity="2.0"/>
+    <limit lower="${-40*deg}" upper="${40*deg}" effort="100" velocity="6.0"/>
   </joint>
 
   <!-- Hoeyre hjul: r1 paa rocker, r2+r3 paa bogie. Continuous (ingen limits). -->
@@ -425,10 +440,10 @@
     <origin xyz="0.014252 0.064048 0.021830" rpy="0 0 0"/>
     <axis xyz="0 1 0"/>
     <dynamics damping="0.02" friction="0.005"/>
-    <limit lower="${-30*deg}" upper="${30*deg}" effort="100" velocity="2.0"/>
-    
+    <limit lower="-0.133" upper="0.133" effort="100" velocity="6.0"/>
+    <xacro:if value="$(arg enable_urdf_mimic)">
       <mimic joint="rocker_right_joint" multiplier="-1.0" offset="0.0"/>
-    
+    </xacro:if>
   </joint>
 
 
@@ -451,10 +466,15 @@
                izz="1e-8"/>
     </inertial>
   </link>
-  <joint name="feste_mellom_feste_og_stang_left_joint" type="fixed">
-    <parent link="rocker_left_link"/>
+  <joint name="feste_mellom_feste_og_stang_left_joint" type="prismatic">
+    <parent link="base_link"/>
     <child link="feste_mellom_feste_og_stang_left_link"/>
-    <origin xyz="-0.006425 0.001235 0.054592" rpy="0 0 0"/>
+    <origin xyz="0.013977 0.064006 0.076371" rpy="0 0 0"/>
+    <xacro:if value="$(arg enable_urdf_mimic)">
+      <mimic joint="rocker_bogie_diff_joint" multiplier="0.05" offset="0.0"/>
+    </xacro:if>
+    <axis xyz="1 0 0"/>
+    <limit lower="${-1*deg}" upper="${1*deg}" effort="50" velocity="3.0"/>
   </joint>
 
   <link name="stang_left_link">
@@ -476,10 +496,15 @@
                izz="1e-8"/>
     </inertial>
   </link>
-  <joint name="stang_left_joint" type="fixed">
+  <joint name="stang_left_joint" type="prismatic">
     <parent link="feste_mellom_feste_og_stang_left_link"/>
     <child link="stang_left_link"/>
-    <origin xyz="-0.095753 -0.000079 0.000059" rpy="0 0 0"/>
+    <origin xyz="-0.101903 0.001198 0.000110" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+    <xacro:if value="$(arg enable_urdf_mimic)">
+      <mimic joint="feste_mellom_feste_og_stang_left_joint" multiplier="0.05" offset="0.0"/>
+    </xacro:if>
+    <limit lower="${-1*deg}" upper="${1*deg}" effort="50" velocity="3.0"/>
   </joint>
 
   <!-- Bogie venstre. Origin = (0.013707,0.001287,-0.008001)-(-0.013851,0.001264,-0.007984)
@@ -516,7 +541,7 @@
     <origin xyz="0.087063 0.025935 -0.050644" rpy="0 0 0"/>
     <axis xyz="0 1 0"/>
     <dynamics damping="0.01" friction="0.003"/>
-    <limit lower="${-40*deg}" upper="${40*deg}" effort="100" velocity="2.0"/>
+    <limit lower="${-40*deg}" upper="${40*deg}" effort="100" velocity="6.0"/>
   </joint>
 
   <!-- Venstre hjul: l1 paa rocker, l2+l3 paa bogie. Continuous (ingen limits). -->
@@ -797,6 +822,64 @@
   </inertial>
 </link>
 
+<!-- ===============================================================
+     VISUELL "TIP"-GEOMETRI FOR PUSHRODS VED DIFF-BEAM
+
+     URDF kan ikke representere den lukkede løkken (stang-tupp <-> beam-ende).
+     For å unngå at stang_endene ser ut som de "stikker ut", legger vi inn
+     to små endebeslag som er barn av diff-beamet. Disse følger diffens yaw
+     (rocker_bogie_diff_joint), slik at den visuelle mekanikken ser korrekt ut
+     selv om den fysiske koblingen håndheves av pluginen via rocker-constraint.
+
+     Plassering bruker samme halvlengde som dokumentert i diff-kommentaren:
+       diff-stav halvlengde ≈ 0.0747 m langs Y i diff-link frame.
+     =============================================================== -->
+<link name="stang_left_tip_link">
+  <!-- Bruk primitiv visual her: mesh-filene hengsel_diff_* finnes ikke i
+       moonmapper_description/meshes/visual i denne repo-versjonen. -->
+  <visual>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <geometry>
+      <sphere radius="0.004"/>
+    </geometry>
+    <material name="moonmapper_dark_gray">
+      <color rgba="0.35 0.35 0.35 1.0"/>
+    </material>
+  </visual>
+  <inertial>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <mass value="0.001"/>
+    <inertia ixx="1e-8" ixy="0" ixz="0" iyy="1e-8" iyz="0" izz="1e-8"/>
+  </inertial>
+</link>
+<joint name="stang_left_tip_joint" type="fixed">
+  <parent link="rocker_bogie_diff_link"/>
+  <child link="stang_left_tip_link"/>
+  <origin xyz="0.0 0.0747 0.0" rpy="0 0 0"/>
+</joint>
+
+<link name="stang_right_tip_link">
+  <visual>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <geometry>
+      <sphere radius="0.004"/>
+    </geometry>
+    <material name="moonmapper_dark_gray">
+      <color rgba="0.35 0.35 0.35 1.0"/>
+    </material>
+  </visual>
+  <inertial>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <mass value="0.001"/>
+    <inertia ixx="1e-8" ixy="0" ixz="0" iyy="1e-8" iyz="0" izz="1e-8"/>
+  </inertial>
+</link>
+<joint name="stang_right_tip_joint" type="fixed">
+  <parent link="rocker_bogie_diff_link"/>
+  <child link="stang_right_tip_link"/>
+  <origin xyz="0.0 -0.0747 0.0" rpy="0 0 0"/>
+</joint>
+
 <!-- Walking-beam staven paa toppen av chassiset.
      Kinematisk utledning (virtuelt ball-link mellom push-arm-tupp og stav-ende):
        push-arm-tupp i rocker-frame: (-0.106, -0.001, +0.061) m
@@ -811,11 +894,16 @@
   <child link="rocker_bogie_diff_link"/>
   <origin xyz="0.000012 0.000001 0.014" rpy="0 0 0"/>
   <axis xyz="0 0 1"/>
-  <dynamics damping="0.8" friction="0.08"/>
-  <limit lower="${-90*deg}" upper="${90*deg}" effort="100" velocity="2.0"/>
-  
+  <!-- Diff-staven er en lett, kosmetisk link som PD-drives i Gazebo.
+       Høy URDF-damping/friction her kan låse hele rocker-systemet indirekte.
+       Hold den derfor myk; stabilisering skjer i pluginens PD-gains. -->
+  <dynamics damping="0.02" friction="0.002"/>
+  <!-- Ikke la diff-leddet mettes på lav velocity-limit; det er en "kosmetisk"
+       ledd som må kunne følge pluginens target uten å klippe hastigheten. -->
+  <limit lower="${-90*deg}" upper="${90*deg}" effort="100" velocity="10.0"/>
+  <xacro:if value="$(arg enable_urdf_mimic)">
     <mimic joint="rocker_right_joint" multiplier="0.82" offset="0.0"/>
-  
+  </xacro:if>
 </joint>
 
 <!-- === Tak (skroghette over kjernen av chassiset) === -->

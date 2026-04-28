@@ -3,14 +3,14 @@
 Kjorer:
   * gz sim (server + GUI) med en valgfri verden
   * robot_state_publisher med Gazebo-xacro-wrapperen
-  * ros_gz_sim create for aa spawne roveren
+  * ros_gz_sim create for å spawne roveren
   * ros_gz_bridge parameter_bridge for clock/tf/cmd_vel/sensorer
   * spawner for joint_state_broadcaster og diff_drive_controller
   * (valgfritt) RViz
 
 Typisk bruk:
   ros2 launch moonmapper_description gazebo_rover.launch.py
-  ros2 launch moonmapper_description gazebo_rover.launch.py world:=...moon_arena.sdf spawn_z:=0.5
+  ros2 launch moonmapper_description gazebo_rover.launch.py world:=...moon_arena.sdf spawn_z:=0.15
   ros2 launch moonmapper_description gazebo_rover.launch.py enable_diff_plugin:=false
 """
 
@@ -50,6 +50,18 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     args = [
+        DeclareLaunchArgument(
+            "ros_domain_id",
+            default_value="0",
+            description="ROS_DOMAIN_ID for all processes in this launch.",
+        ),
+        DeclareLaunchArgument(
+            "rmw_implementation",
+            # Jazzy på Ubuntu installerer typisk FastDDS som standard.
+            # CycloneDDS finnes ikke alltid (librmw_cyclonedds_cpp.so), så hold default trygg.
+            default_value="rmw_fastrtps_cpp",
+            description="RMW_IMPLEMENTATION for all processes in this launch.",
+        ),
         DeclareLaunchArgument("model", default_value=default_xacro,
                               description="Path til Gazebo-xacro-wrapper."),
         DeclareLaunchArgument("world", default_value=default_world,
@@ -77,6 +89,28 @@ def generate_launch_description() -> LaunchDescription:
                               description="ros2_control controllers YAML."),
         DeclareLaunchArgument("enable_diff_plugin", default_value="true",
                               description="Aktiver RockerBogieDifferential-pluginen."),
+        DeclareLaunchArgument("enable_triad_spectroscopy", default_value="false",
+                              description="Aktiver TriadSpectroscopy raycast-plugin (mye loggstøy)."),
+        DeclareLaunchArgument("diff_right_sign", default_value="1.0",
+                              description="Diff-plugin: right_sign (+1: qL+qR, -1: qL-qR)."),
+        DeclareLaunchArgument("diff_kp", default_value="5.0",
+                              description="Diff-plugin: kp for rocker constraint."),
+        DeclareLaunchArgument("diff_kd", default_value="0.5",
+                              description="Diff-plugin: kd for rocker constraint."),
+        DeclareLaunchArgument("diff_max_torque", default_value="0.5",
+                              description="Diff-plugin: max torque for rocker constraint."),
+        DeclareLaunchArgument("diff_k_diff_L", default_value="-0.41",
+                              description="Diff-plugin: k_diff_L for diff target."),
+        DeclareLaunchArgument("diff_k_diff_R", default_value="0.41",
+                              description="Diff-plugin: k_diff_R for diff target."),
+        DeclareLaunchArgument("diff_k_diff_0", default_value="0.0",
+                              description="Diff-plugin: k_diff_0 for diff target."),
+        DeclareLaunchArgument("diff_kp_aux", default_value="1.0",
+                              description="Diff-plugin: kp_aux for diff joint."),
+        DeclareLaunchArgument("diff_kd_aux", default_value="0.2",
+                              description="Diff-plugin: kd_aux for diff joint."),
+        DeclareLaunchArgument("diff_max_torque_aux", default_value="0.2",
+                              description="Diff-plugin: max_torque_aux for diff joint."),
         DeclareLaunchArgument("spawn_x", default_value="0.0"),
         DeclareLaunchArgument("spawn_y", default_value="0.0"),
         DeclareLaunchArgument("spawn_z", default_value="0.2"),
@@ -92,11 +126,31 @@ def generate_launch_description() -> LaunchDescription:
             " use_gazebo:=true",
             
             " enable_diff_plugin:=", LaunchConfiguration("enable_diff_plugin"),
+            " enable_urdf_mimic:=false",
+            " enable_triad_spectroscopy:=", LaunchConfiguration("enable_triad_spectroscopy"),
+            " diff_right_sign:=", LaunchConfiguration("diff_right_sign"),
+            " diff_kp:=", LaunchConfiguration("diff_kp"),
+            " diff_kd:=", LaunchConfiguration("diff_kd"),
+            " diff_max_torque:=", LaunchConfiguration("diff_max_torque"),
+            " diff_k_diff_L:=", LaunchConfiguration("diff_k_diff_L"),
+            " diff_k_diff_R:=", LaunchConfiguration("diff_k_diff_R"),
+            " diff_k_diff_0:=", LaunchConfiguration("diff_k_diff_0"),
+            " diff_kp_aux:=", LaunchConfiguration("diff_kp_aux"),
+            " diff_kd_aux:=", LaunchConfiguration("diff_kd_aux"),
+            " diff_max_torque_aux:=", LaunchConfiguration("diff_max_torque_aux"),
         ]),
         value_type=str,
     )
 
     # Gi gz sim tilgang til pluginen og meshene via resource path.
+    set_ros_domain = SetEnvironmentVariable(
+        name="ROS_DOMAIN_ID",
+        value=LaunchConfiguration("ros_domain_id"),
+    )
+    set_rmw = SetEnvironmentVariable(
+        name="RMW_IMPLEMENTATION",
+        value=LaunchConfiguration("rmw_implementation"),
+    )
     set_gz_resource_path = SetEnvironmentVariable(
         name="GZ_SIM_RESOURCE_PATH",
         value=[PathJoinSubstitution([pkg, ".."]), ":",
@@ -211,7 +265,7 @@ def generate_launch_description() -> LaunchDescription:
         output="screen",
     )
 
-    # Aktiver joint_state_broadcaster foerst, deretter diff_drive.
+    # Aktiver joint_state_broadcaster først, deretter diff_drive.
     after_spawn_jsb = RegisterEventHandler(
         OnProcessExit(target_action=spawn_rover, on_exit=[force_set_pose, print_pose, load_jsb]),
     )
@@ -231,6 +285,8 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     return LaunchDescription(args + [
+        set_ros_domain,
+        set_rmw,
         set_gz_resource_path,
         set_gz_plugin_path,
         gz_sim,

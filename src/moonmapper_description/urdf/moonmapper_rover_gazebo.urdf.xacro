@@ -6,6 +6,24 @@
   <!-- Grunnmodell: samme fil som RViz bruker -->
   <xacro:include filename="$(find moonmapper_description)/urdf/moonmapper_rover.urdf.xacro"/>
 
+  <!-- Slå av tunge/verbose plugins under suspension-debug -->
+  <xacro:arg name="enable_triad_spectroscopy" default="true"/>
+  <!-- Diff-plugin tuning (eksponeres som launch-args) -->
+  <!-- right_sign=+1 => err=qL+qR. right_sign=-1 => err=qL-qR.
+       I praksis velger vi verdien som IKKE metter rockerne i joint-limits ved hvile. -->
+  <xacro:arg name="diff_right_sign" default="1.0"/>
+  <xacro:arg name="diff_kp" default="5.0"/>
+  <xacro:arg name="diff_kd" default="0.5"/>
+  <xacro:arg name="diff_max_torque" default="0.5"/>
+  <xacro:arg name="diff_k_diff_L" default="-0.41"/>
+  <xacro:arg name="diff_k_diff_R" default="0.41"/>
+  <xacro:arg name="diff_k_diff_0" default="0.0"/>
+  <!-- Aux-PD er "kosmetisk" men påvirker stabilitet hvis den metter og slår i velocity-limit.
+       Vi velger derfor litt lavere kp, høyere kd og moderat max torque. -->
+  <xacro:arg name="diff_kp_aux" default="0.8"/>
+  <xacro:arg name="diff_kd_aux" default="0.4"/>
+  <xacro:arg name="diff_max_torque_aux" default="0.12"/>
+
   <!-- Kontakt/friksjons-parametere for hjul. mu1/mu2 er relativt hoeye fordi
        hjul-masse er kun ~0.02 kg pr hjul; lav friksjon ville gi sludging paa
        bakken. kp=1e7 holder en 2.5 kg rover uten naalegging.-->
@@ -41,25 +59,27 @@
   <!-- Passiv damping for rocker- og bogie-joints (fysikken slipper
        ikke daglige svingninger loese naar ingen styrer dem) -->
   <gazebo reference="rocker_left_joint">
-    <implicitSpringDamper>true</implicitSpringDamper>
+    <!-- implicitSpringDamper kan i praksis introdusere en "skjult" fjær som gjør
+         passive joints kunstig stive i enkelte physics-backends. Hold dette av. -->
+    <implicitSpringDamper>false</implicitSpringDamper>
     <provideFeedback>true</provideFeedback>
   </gazebo>
   <gazebo reference="rocker_right_joint">
-    <implicitSpringDamper>true</implicitSpringDamper>
+    <implicitSpringDamper>false</implicitSpringDamper>
     <provideFeedback>true</provideFeedback>
   </gazebo>
   <gazebo reference="bogie_left_joint">
-    <implicitSpringDamper>true</implicitSpringDamper>
+    <implicitSpringDamper>false</implicitSpringDamper>
   </gazebo>
   <gazebo reference="bogie_right_joint">
-    <implicitSpringDamper>true</implicitSpringDamper>
+    <implicitSpringDamper>false</implicitSpringDamper>
   </gazebo>
 
   <!-- Diff-staven er den eneste revolute joint paa top-linkage-siden.
        Den drives av RockerBogieDifferential-pluginen (aux-PD) mot en
        affin funksjon av rocker-vinkene. -->
   <gazebo reference="rocker_bogie_diff_joint">
-    <implicitSpringDamper>true</implicitSpringDamper>
+    <implicitSpringDamper>false</implicitSpringDamper>
     <provideFeedback>true</provideFeedback>
   </gazebo>
 
@@ -146,23 +166,38 @@
       <hengsel_right_joint></hengsel_right_joint>
 
       <!-- Primaer-PD: sum-constraint paa rockerne (walking-beam). -->
-      <kp>2.0</kp>
-      <kd>0.2</kd>
+      <!-- Strammere constraint: roveren er lett, og terrengkontakt lager korte
+           impulser; for lav kp/max_torque gjør at walking-beam-effekten uteblir. -->
+      <kp>$(arg diff_kp)</kp>
+      <kd>$(arg diff_kd)</kd>
       <target_sum>0.0</target_sum>
-      <max_torque>0.2</max_torque>
+      <max_torque>$(arg diff_max_torque)</max_torque>
+      <!-- Fortegn for hoeyre side i constrainten:
+           err = qL + right_sign*qR - target_sum
+           Default +1.0 tilsvarer qL + qR = 0.
+           Sett -1.0 hvis hoeyre joint sin positive retning er speilet. -->
+      <!-- err = qL + right_sign*qR - target_sum -->
+      <right_sign>$(arg diff_right_sign)</right_sign>
 
       <!-- Kinematikk for diff-staven:
              q_diff* = k_diff_L*qL + k_diff_R*qR + k_diff_0
            Med sum-constraint qL=-qR og RViz-mimic phi=0.82*qR faar vi:
              q_diff* = 0.82*qR  ->  k_diff_L=0, k_diff_R=0.82           Snu fortegn paa k_diff_R hvis staven dreier motsatt av rockeren. -->
       <k_diff_L>0.0</k_diff_L>
-      <k_diff_R>0.82</k_diff_R>
-      <k_diff_0>0.0</k_diff_0>
+      <!-- Diff-beam yaw bør avhenge av BEGGE rockere:
+           Ved symmetri (qL=-qR) ønsker vi fortsatt q_diff* ≈ 0.82*qR.
+           Dette oppnås med: q_diff* = 0.41*(qR - qL). -->
+      <k_diff_L>$(arg diff_k_diff_L)</k_diff_L>
+      <k_diff_R>$(arg diff_k_diff_R)</k_diff_R>
+      <k_diff_0>$(arg diff_k_diff_0)</k_diff_0>
 
-      <!-- Aux-PD: diff-staven er ~5g, så gainene er svært lave. -->
-      <kp_aux>0.2</kp_aux>
-      <kd_aux>0.02</kd_aux>
-      <max_torque_aux>0.02</max_torque_aux>
+      <!-- Aux-PD (diff-ledd): i praksis må dette være sterkt nok til å overvinne
+           friksjon, solver-demping og numerikk. For lavt moment her gjør at
+           rocker_bogie_diff_joint ser "låst" ut selv om pluginen kjører. -->
+      <!-- Aux-PD (diff-ledd): nok moment til å følge target uten å mettes på velocity limit. -->
+      <kp_aux>$(arg diff_kp_aux)</kp_aux>
+      <kd_aux>$(arg diff_kd_aux)</kd_aux>
+      <max_torque_aux>$(arg diff_max_torque_aux)</max_torque_aux>
     </plugin>
     </xacro:if>
 
@@ -183,22 +218,24 @@
     <!-- ========================================================= -->
     <!-- Level 1: Synthetic Triad spectroscopy sensors (raycast)    -->
     <!-- ========================================================= -->
-    <plugin filename="libmoonmapper_triad_spectroscopy.so"
-            name="moonmapper::TriadSpectroscopy">
-      <enable>true</enable>
-      <update_rate_hz>20</update_rate_hz>
-      <max_distance>0.12</max_distance>
-      <noise_stddev>0.02</noise_stddev>
-      <channels>18</channels>
+    <xacro:if value="$(arg enable_triad_spectroscopy)">
+      <plugin filename="libmoonmapper_triad_spectroscopy.so"
+              name="moonmapper::TriadSpectroscopy">
+        <enable>true</enable>
+        <update_rate_hz>20</update_rate_hz>
+        <max_distance>0.12</max_distance>
+        <noise_stddev>0.02</noise_stddev>
+        <channels>18</channels>
 
-      <sensor1_link>triad_sensor_1_link</sensor1_link>
-      <sensor2_link>triad_sensor_2_link</sensor2_link>
+        <sensor1_link>triad_sensor_1_link</sensor1_link>
+        <sensor2_link>triad_sensor_2_link</sensor2_link>
 
-      <topic1>/triad_sensor_1/spectrum</topic1>
-      <topic2>/triad_sensor_2/spectrum</topic2>
+        <topic1>/triad_sensor_1/spectrum</topic1>
+        <topic2>/triad_sensor_2/spectrum</topic2>
 
-      <material_map_yaml>$(find moonmapper_gz_sensors)/config/triad_material_map.yaml</material_map_yaml>
-    </plugin>
+        <material_map_yaml>$(find moonmapper_gz_sensors)/config/triad_material_map.yaml</material_map_yaml>
+      </plugin>
+    </xacro:if>
   </gazebo>
 
   <!-- =============================================================== -->

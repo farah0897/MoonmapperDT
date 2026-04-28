@@ -22,14 +22,6 @@ joint_state_publisher:
         parent: rocker_right_joint
         factor: 0.0
         offset: 0.0
-      hengsel_diff_L_joint:
-        parent: rocker_left_joint
-        factor: 0.0
-        offset: 0.0
-      hengsel_diff_R_joint:
-        parent: rocker_right_joint
-        factor: 0.0
-        offset: 0.0
       rocker_bogie_diff_joint:
         parent: rocker_left_joint
         factor: 0.0
@@ -45,14 +37,6 @@ joint_state_publisher_gui:
         factor: 0.0
         offset: 0.0
       bogie_right_joint:
-        parent: rocker_right_joint
-        factor: 0.0
-        offset: 0.0
-      hengsel_diff_L_joint:
-        parent: rocker_left_joint
-        factor: 0.0
-        offset: 0.0
-      hengsel_diff_R_joint:
         parent: rocker_right_joint
         factor: 0.0
         offset: 0.0

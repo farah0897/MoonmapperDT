@@ -13,8 +13,9 @@
 <sdf version="1.11">
   <world name="rocker_bogie_test">
 
-    <!-- Fysikk: sma tidssteg = ro i passive ledd -->
-    <physics name="1ms" type="dart">
+    <!-- Fysikk: bruk samme backend som moon_arena (Bullet) for konsistent kontakt
+         og tuning av rocker-bogie. -->
+    <physics name="1ms" type="bullet">
       <max_step_size>0.001</max_step_size>
       <real_time_factor>1.0</real_time_factor>
       <real_time_update_rate>1000</real_time_update_rate>

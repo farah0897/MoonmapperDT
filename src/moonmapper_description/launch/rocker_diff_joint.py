@@ -2,8 +2,8 @@
 """Rocker-bogie + differential kinematic coupling for MoonMapper.
 
 Driver-joints (fra JSP/GUI paa input_topic):
-    L = rocker_left_link_joint
-    R = rocker_right_link_joint
+    L = rocker_left_joint
+    R = rocker_right_joint
 
 Avhengige joints beregnes affint (alle gains er ROS-parametere):
 
@@ -31,12 +31,15 @@ class RockerBogieKinematics(Node):
         super().__init__('rocker_bogie_kinematics')
 
         # -------- joint-navn (overstyrbare via launch) ------------------
-        self.declare_parameter('left_rocker',  'rocker_left_link_joint')
-        self.declare_parameter('right_rocker', 'rocker_right_link_joint')
-        self.declare_parameter('left_bogie',   'bogie_left_link_joint')
-        self.declare_parameter('right_bogie',  'bogie_right_link_joint')
-        self.declare_parameter('left_hinge',   'hengsel_diff_L_joint')
-        self.declare_parameter('right_hinge',  'hengsel_diff_R_joint')
+        # NB: Default-verdiene her skal matche URDF/Xacro i moonmapper_description.
+        self.declare_parameter('left_rocker',  'rocker_left_joint')
+        self.declare_parameter('right_rocker', 'rocker_right_joint')
+        self.declare_parameter('left_bogie',   'bogie_left_joint')
+        self.declare_parameter('right_bogie',  'bogie_right_joint')
+        # Hengsel-joints finnes ikke i dagens moonmapper_rover.urdf.xacro.
+        # La dem være tomme som default; hvis du faktisk har dem i URDF, sett navn via launch.
+        self.declare_parameter('left_hinge',   '')
+        self.declare_parameter('right_hinge',  '')
         self.declare_parameter('diff_joint',   'rocker_bogie_diff_joint')
 
         # -------- topics ------------------------------------------------
@@ -133,11 +136,14 @@ class RockerBogieKinematics(Node):
 
         overrides = {
             self.n_d:  q_diff,
-            self.n_Lh: q_hL,
-            self.n_Rh: q_hR,
             self.n_Lb: q_bL,
             self.n_Rb: q_bR,
         }
+        # Hengsel-joints er valgfrie (tom streng => ignorer)
+        if self.n_Lh:
+            overrides[self.n_Lh] = q_hL
+        if self.n_Rh:
+            overrides[self.n_Rh] = q_hR
 
         out = self._build_output(msg, idx, overrides)
         self._pub.publish(out)

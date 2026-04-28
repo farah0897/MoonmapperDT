@@ -2,43 +2,49 @@
 //
 // Gazebo Sim 8 (Harmonic) system plugin: RockerBogieDifferential.
 //
-// Dette pluginet gjoer TO ting i samme PreUpdate-loop:
+// Dette pluginet gjør TO ting i samme PreUpdate-loop:
 //
-// 1) Haandhever den "virtuelle" differensial-bjelken mellom venstre
-//    og hoegre rocker ved aa legge PD-moment paa summen av vinklene:
+// 1) Håndhever den "virtuelle" differensial-bjelken mellom venstre
+//    og høyre rocker ved å legge PD-moment på summen av vinklene:
 //
 //        tau_L = tau_R = -kp*(qL + qR - target_sum) - kd*(dqL + dqR)
 //
-//    Dette gir den anti-symmetriske oppfoerselen en ekte rocker-bogie
+//    Dette gir den anti-symmetriske oppfordringen en ekte rocker-bogie
 //    walking-beam ville hatt.
 //
-// 2) PD-posisjonskontrollerer de tre "kosmetiske" leddene
-//    (hengsel_diff_L_joint, hengsel_diff_R_joint, rocker_bogie_diff_joint)
-//    slik at de foelger synkront med rockerne i henhold til en affin
-//    kinematisk relasjon:
+// 2) PD-posisjonskontrollerer "kosmetiske" ledd slik at de følger
+//    synkront med rockerne i henhold til en affin kinematisk relasjon:
 //
 //        q_diff*   = k_diff_L  * qL + k_diff_R  * qR + k_diff_0
 //        q_hengL*  = d_L       * qL + e_L
 //        q_hengR*  = d_R       * qR + e_R
 //
-//    Dette er det samme som RockerBogieKinematics-noden gjoer for
+//    Dette er det samme som RockerBogieKinematics-noden gjør for
 //    RViz, slik at Gazebo- og RViz-animasjonen er konsistent. I
-//    aapen-kjede-URDF-en er disse leddene ikke fysisk koblet til
-//    rockerne, saa vi driver dem med moment mot en beregnet
-//    maalvinkel.
+//    åpen-kjede-URDF-en kan slike ledd være frikoblet fra rockerne,
+//    så vi driver dem med moment mot en beregnet målvinkel.
+//
+//    NB: I denne kodebasen er hengsel-leddene ofte IKKE definert i URDF/Xacro.
+//    Derfor er <hengsel_left_joint> og <hengsel_right_joint> valgfrie og
+//    default-er til tom streng (ignorert av pluginen).
 //
 // Alle parametere er SDF-valgfrie (defaults i parentes):
 //
 //   <left_rocker_joint>   (rocker_left_joint)
 //   <right_rocker_joint>  (rocker_right_joint)
 //   <diff_joint>          (rocker_bogie_diff_joint)
-//   <hengsel_left_joint>  (hengsel_diff_L_joint)
-//   <hengsel_right_joint> (hengsel_diff_R_joint)
+//   <hengsel_left_joint>  ("")  optional
+//   <hengsel_right_joint> ("")  optional
 //
 //   <kp>          (200.0)  gain paa (qL + qR)
 //   <kd>          ( 20.0)  demping paa (dqL + dqR)
 //   <target_sum>  (  0.0)
 //   <max_torque>  ( 25.0)  clamp paa all applied torque [Nm]
+//
+//   <right_sign>  ( +1.0)  fortegn for hoeyre rocker i sum-constraint:
+//                          err = qL + right_sign*qR - target_sum
+//                          Sett -1.0 hvis hoeyre joint sin positive retning
+//                          er speilet relativt til venstre.
 //
 //   <k_diff_L>    ( 0.5)   q_diff* = k_diff_L*qL + k_diff_R*qR + k_diff_0
 //   <k_diff_R>    (-0.5)
@@ -98,6 +104,11 @@ public:
       "right_rocker_joint",  std::string{"rocker_right_joint"}).first;
     this->diff_joint_name_    = _sdf->Get<std::string>(
       "diff_joint",          std::string{"rocker_bogie_diff_joint"}).first;
+    // Valgfrie hengsel-ledd (tom streng => pluginen ignorerer dem)
+    this->hengsel_l_name_     = _sdf->Get<std::string>(
+      "hengsel_left_joint",  std::string{""}).first;
+    this->hengsel_r_name_     = _sdf->Get<std::string>(
+      "hengsel_right_joint", std::string{""}).first;
     
 
     // Primaer-PD (sum-constraint på rockers)
@@ -105,6 +116,11 @@ public:
     this->kd_         = _sdf->Get<double>("kd",          20.0).first;
     this->target_sum_ = _sdf->Get<double>("target_sum",   0.0).first;
     this->max_torque_ = _sdf->Get<double>("max_torque",  25.0).first;
+    this->right_sign_ = _sdf->Get<double>("right_sign",   1.0).first;
+    if (std::abs(this->right_sign_) < 0.5) {
+      gzwarn << "[RockerBogieDifferential] right_sign near 0; forcing to +1.0\n";
+      this->right_sign_ = 1.0;
+    }
 
     // Kinematikk-koeffisienter for de tre kosmetiske ledd
     this->k_diff_L_ = _sdf->Get<double>("k_diff_L",  0.5).first;
@@ -123,19 +139,24 @@ public:
 
     this->enable_     = _sdf->Get<bool>("enable",        true).first;
 
-    gzmsg << "[RockerBogieDifferential] Configured for model '"
-          << this->model_.Name(_ecm) << "':\n"
-          << "  left_rocker_joint  = " << this->left_joint_name_    << "\n"
-          << "  right_rocker_joint = " << this->right_joint_name_   << "\n"
-          << "  diff_joint         = " << this->diff_joint_name_    << "\n"
-          << "  sum-PD:  kp=" << this->kp_ << " kd=" << this->kd_
-          << " target_sum=" << this->target_sum_
-          << " max_tau=" << this->max_torque_ << "\n"
-          << "  aux-PD:  kp=" << this->kp_aux_ << " kd=" << this->kd_aux_
-          << " max_tau=" << this->max_torque_aux_ << "\n"
-          << "  q_diff*  = " << this->k_diff_L_ << "*qL + "
-                             << this->k_diff_R_ << "*qR + "
-                             << this->k_diff_0_ << "\n";
+    // Bruk gzwarn (ikke gzmsg) slik at vi ser dette selv om console-verbosity er lav
+    // og selv om andre warnings spammer terminalen.
+    gzwarn << "[RockerBogieDifferential] Configured for model '"
+           << this->model_.Name(_ecm) << "':\n"
+           << "  left_rocker_joint  = " << this->left_joint_name_    << "\n"
+           << "  right_rocker_joint = " << this->right_joint_name_   << "\n"
+           << "  diff_joint         = " << this->diff_joint_name_    << "\n"
+           << "  hengsel_left_joint  = " << (this->hengsel_l_name_.empty() ? std::string{"(disabled)"} : this->hengsel_l_name_) << "\n"
+           << "  hengsel_right_joint = " << (this->hengsel_r_name_.empty() ? std::string{"(disabled)"} : this->hengsel_r_name_) << "\n"
+           << "  sum-PD:  kp=" << this->kp_ << " kd=" << this->kd_
+           << " target_sum=" << this->target_sum_
+           << " max_tau=" << this->max_torque_
+           << " right_sign=" << this->right_sign_ << "\n"
+           << "  aux-PD:  kp=" << this->kp_aux_ << " kd=" << this->kd_aux_
+           << " max_tau=" << this->max_torque_aux_ << "\n"
+           << "  q_diff*  = " << this->k_diff_L_ << "*qL + "
+                              << this->k_diff_R_ << "*qR + "
+                              << this->k_diff_0_ << "\n";
   }
 
   // ------------------------------------------------------------------
@@ -165,6 +186,13 @@ public:
       }
       return;
     }
+    if (this->diff_joint_name_.size() && this->diff_joint_ == gz::sim::kNullEntity) {
+      if (!this->warned_missing_diff_) {
+        gzwarn << "[RockerBogieDifferential] Fant ikke diff_joint '"
+               << this->diff_joint_name_ << "' enda.\n";
+        this->warned_missing_diff_ = true;
+      }
+    }
 
     // Sikre at nodens komponenter finnes på ALLE relevante joints.
     EnsureJointComponents(_ecm, this->left_joint_);
@@ -189,14 +217,17 @@ public:
 
     // ---- 1) Sum-constraint på rockers --------------------------------
     {
-      const double err     = (qL + qR) - this->target_sum_;
-      const double err_dot = (dqL + dqR);
-      double tau = -this->kp_ * err - this->kd_ * err_dot;
-      tau = std::clamp(tau, -this->max_torque_, this->max_torque_);
+      const double s = this->right_sign_;
+      const double err     = (qL + s * qR) - this->target_sum_;
+      const double err_dot = (dqL + s * dqR);
+      const double tau_L = std::clamp(
+        (-this->kp_ * err - this->kd_ * err_dot),
+        -this->max_torque_, this->max_torque_);
+      const double tau_R = s * tau_L;
       _ecm.SetComponentData<gz::sim::components::JointForceCmd>(
-        this->left_joint_,  {tau});
+        this->left_joint_,  {tau_L});
       _ecm.SetComponentData<gz::sim::components::JointForceCmd>(
-        this->right_joint_, {tau});
+        this->right_joint_, {tau_R});
     }
 
     // ---- 2) PD-posisjonskontroll på kosmetiske ledd ---------------
@@ -299,6 +330,7 @@ private:
   double kd_{20.0};
   double target_sum_{0.0};
   double max_torque_{25.0};
+  double right_sign_{1.0};
 
   // Kinematikk-koeffisienter
   double k_diff_L_{ 0.5};
@@ -316,6 +348,7 @@ private:
 
   bool   enable_{true};
   bool   warned_missing_{false};
+  bool   warned_missing_diff_{false};
 };
 
 }  // namespace moonmapper
