@@ -1,3 +1,4 @@
+from glob import glob
 from setuptools import find_packages, setup
 
 
@@ -10,7 +11,9 @@ setup(
     data_files=[
         ("share/ament_index/resource_index/packages", [f"resource/{package_name}"]),
         (f"share/{package_name}", ["package.xml"]),
-        (f"share/{package_name}/models", ["models/README.md"]),
+        # Install any runtime model artifacts placed in src/moonmapper_ml/models/
+        # (These files are typically ignored by git, but still useful locally.)
+        (f"share/{package_name}/models", glob("models/*")),
     ],
     install_requires=["setuptools"],
     zip_safe=True,

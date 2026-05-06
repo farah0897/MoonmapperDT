@@ -1,36 +1,118 @@
 """
 Feature extraction for SparkFun AS7265X Triad spectrometer sensors.
 
-Phase 1 (baseline):
-- Triad-only features from two sensors (2 * 18 = 36 channels total).
-- No assumptions about real dataset existing yet.
+This script implements a *working baseline* for phase 1 (Triad-only):
+- Two sensors, 18 channels each => 36 channels total (do not average away sensors).
+- Reads per-sample "burst" raw CSV files (multiple rows) and aggregates to one feature row.
+- Joins features with `metadata.csv` via `sample_id`.
+- Writes a processed feature table CSV that the training scripts can consume.
 
-Expected raw format (initial assumption / TODO):
-- A CSV containing at least 36 float values per sample.
-- The first 18 belong to sensor_0, the next 18 belong to sensor_1.
+Raw CSV formats supported
+-------------------------
+The raw Triad CSV must contain *36 spectral columns* and can use either naming convention:
 
-This module provides:
-- read_triad_raw_csv(): robust CSV reader (single row or many rows)
-- compute_basic_features(): mean/std/min/max over 36 channels
-- compute_rms_features(): rms_total, rms_sensor_0, rms_sensor_1
-- extract_features(): convenience wrapper returning a feature dict
+1) Sensor-prefixed:
+   - S0_410 ... S0_940 (18 columns)
+   - S1_410 ... S1_940 (18 columns)
 
-TODO:
-- Align with the final Arduino logging format.
-- Add support for timestamps, multiple bursts, and per-burst aggregation.
+2) Left/Right-prefixed:
+   - L_410 ... L_940 (18 columns)
+   - R_410 ... R_940 (18 columns)
+
+The file may contain extra columns (ignored). Missing spectral columns will raise a clear error.
+
+Processed feature output
+------------------------
+For each sample (burst file), we compute per-channel statistics across burst rows:
+- mean_0..mean_35
+- std_0..std_35
+- min_0..min_35
+- max_0..max_35
+and scalar RMS:
+- rms_total, rms_sensor_0, rms_sensor_1
+
+Additionally (from the **per-channel burst mean** vector ``mean_36`` only), five simple
+band ratios with fixed wavelengths — intended to capture spectral **shape** and reduce
+sensitivity to uniform intensity scaling:
+- ratio_S0_410_940, ratio_S1_410_940 — short vs long wavelength per sensor
+- ratio_S0_560_730, ratio_S1_560_730 — visible vs “red edge” per sensor
+- ratio_S0_485_610 — green–orange band ratio on sensor 0 (extra shape cue)
+
+Ratios use numerator / (denominator + eps), eps = 1e-6.
+
+Additionally, **Spectral Angle Mapper (SAM)** angles (radians) between the burst-mean
+spectrum ``mean_36`` and three **class reference spectra** (same 36-D vectors):
+
+- References are the **mean** of ``mean_36`` over rows whose ``label_material`` maps
+  to ``aluminium``, ``steel``, or ``sand`` (see ``_canonical_sam_class``).
+- Per sample: ``sam_to_aluminium``, ``sam_to_steel``, ``sam_to_sand``.
+
+SAM: ``theta = arccos( clip( (x·r) / (||x|| ||r|| + eps), [-1,1] ) )`` with ``eps=1e-8``.
+If a class has no samples, the reference is the zero vector (SAM degrades to ~π/2).
+References are saved next to the processed CSV as ``sam_reference_spectra.json`` for inference.
+
+**Note:** References are computed from **all rows in the current metadata file** before
+train/val/test split; for strict evaluation you can point extraction at training-only metadata.
+
+CLI
+---
+--metadata  Path to metadata CSV (must include sample_id and triad_file)
+--raw-dir   Base directory where triad_file paths are resolved
+--output    Output processed CSV (default: ml/datasets/processed/triad_features.csv)
+
+The script is designed to be safe even before real datasets exist: it will explain what is missing.
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import json
 import math
+from collections import defaultdict
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple
+
+import numpy as np
 
 
 NUM_SENSORS_DEFAULT = 2
 CHANNELS_PER_SENSOR_DEFAULT = 18
+
+# Band-ratio denominators: avoid division by zero (library / user request pattern).
+_RATIO_EPS = 1e-6
+
+# SAM denominator stabilizer (clip cosine before arccos).
+_SAM_EPS = 1e-8
+
+# Canonical classes for reference spectra and SAM feature names.
+SAM_CLASS_ORDER: Tuple[str, ...] = ("aluminium", "steel", "sand")
+SAM_FEATURE_NAMES: Dict[str, str] = {
+    "aluminium": "sam_to_aluminium",
+    "steel": "sam_to_steel",
+    "sand": "sam_to_sand",
+}
+
+WAVELENGTHS_NM: Tuple[int, ...] = (
+    410,
+    435,
+    460,
+    485,
+    510,
+    535,
+    560,
+    585,
+    610,
+    645,
+    680,
+    705,
+    730,
+    760,
+    810,
+    860,
+    900,
+    940,
+)
 
 
 def _safe_float(x: str) -> float:
@@ -40,47 +122,171 @@ def _safe_float(x: str) -> float:
         raise ValueError(f"Could not parse float from: {x!r}") from exc
 
 
+def _canonical_sam_class(label_material: str) -> Optional[str]:
+    """
+    Map metadata ``label_material`` to aluminium | steel | sand for SAM references.
+
+    Returns None if no match (row is excluded from reference means but still gets SAM features).
+    """
+    s = (label_material or "").strip().lower()
+    if not s:
+        return None
+    if "alu" in s or "alumin" in s:
+        return "aluminium"
+    if "steel" in s or "stål" in s or "stal" in s or "staal" in s or "stainless" in s:
+        return "steel"
+    if "sand" in s or "regolith" in s or "torr_sand" in s:
+        return "sand"
+    return None
+
+
+def spectral_angle_mapper(x: Sequence[float], r: Sequence[float], *, eps: float = _SAM_EPS) -> float:
+    """
+    SAM angle θ between vectors x and r (same length), in radians.
+    """
+    xa = np.asarray(x, dtype=np.float64).ravel()
+    ra = np.asarray(r, dtype=np.float64).ravel()
+    if xa.shape != ra.shape:
+        raise ValueError(f"SAM: shape mismatch {xa.shape} vs {ra.shape}")
+    nx = float(np.linalg.norm(xa))
+    nr = float(np.linalg.norm(ra))
+    if nx < eps or nr < eps:
+        return float(0.5 * np.pi)
+    cos_theta = float(np.dot(xa, ra) / (nx * nr + eps))
+    cos_theta = float(np.clip(cos_theta, -1.0, 1.0))
+    return float(np.arccos(cos_theta))
+
+
+def build_sam_reference_spectra(
+    labeled_mean36: Sequence[Tuple[str, Sequence[float]]],
+) -> Dict[str, np.ndarray]:
+    """
+    Mean burst spectrum (36,) per SAM class from training rows.
+
+    ``labeled_mean36`` is iterable of (label_material, mean_36).
+    """
+    bins: Dict[str, List[np.ndarray]] = defaultdict(list)
+    for label_material, mean_36 in labeled_mean36:
+        cls = _canonical_sam_class(label_material)
+        if cls is None:
+            continue
+        bins[cls].append(np.asarray(mean_36, dtype=np.float64).ravel())
+
+    refs: Dict[str, np.ndarray] = {}
+    for cls in SAM_CLASS_ORDER:
+        if bins[cls]:
+            refs[cls] = np.mean(np.stack(bins[cls], axis=0), axis=0)
+        else:
+            refs[cls] = np.zeros(CHANNELS_PER_SENSOR_DEFAULT * 2, dtype=np.float64)
+    return refs
+
+
+def compute_sam_features(
+    mean_36: Sequence[float],
+    refs: Mapping[str, np.ndarray],
+) -> Dict[str, float]:
+    """One SAM angle per canonical class vs ``mean_36``."""
+    out: Dict[str, float] = {}
+    for cls in SAM_CLASS_ORDER:
+        name = SAM_FEATURE_NAMES[cls]
+        r = refs.get(cls)
+        if r is None:
+            r = np.zeros(CHANNELS_PER_SENSOR_DEFAULT * 2, dtype=np.float64)
+        out[name] = spectral_angle_mapper(mean_36, r)
+    return out
+
+
+def save_sam_reference_spectra(path: Path, refs: Mapping[str, np.ndarray]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {k: np.asarray(v, dtype=np.float64).tolist() for k, v in refs.items()}
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def load_sam_reference_spectra(path: Path) -> Dict[str, np.ndarray]:
+    if not path.exists():
+        raise FileNotFoundError(f"SAM reference file not found: {path}")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    out: Dict[str, np.ndarray] = {}
+    for cls in SAM_CLASS_ORDER:
+        if cls not in data:
+            raise ValueError(f"SAM refs JSON missing key {cls!r}")
+        out[cls] = np.asarray(data[cls], dtype=np.float64).ravel()
+        if out[cls].size != CHANNELS_PER_SENSOR_DEFAULT * 2:
+            raise ValueError(f"SAM ref for {cls}: expected length 36, got {out[cls].size}")
+    return out
+
+
+def _expected_column_names(prefix_a: str, prefix_b: str) -> List[str]:
+    cols: List[str] = []
+    cols.extend([f"{prefix_a}_{wl}" for wl in WAVELENGTHS_NM])
+    cols.extend([f"{prefix_b}_{wl}" for wl in WAVELENGTHS_NM])
+    return cols
+
+
+def _detect_schema(fieldnames: Sequence[str]) -> Tuple[str, str]:
+    """
+    Detect whether the raw CSV uses S0/S1 or L/R naming.
+    Returns (prefix_sensor0, prefix_sensor1).
+    """
+    fields = set(fieldnames)
+    s0 = {f"S0_{wl}" for wl in WAVELENGTHS_NM}
+    s1 = {f"S1_{wl}" for wl in WAVELENGTHS_NM}
+    l0 = {f"L_{wl}" for wl in WAVELENGTHS_NM}
+    r1 = {f"R_{wl}" for wl in WAVELENGTHS_NM}
+
+    if s0.issubset(fields) and s1.issubset(fields):
+        return "S0", "S1"
+    if l0.issubset(fields) and r1.issubset(fields):
+        return "L", "R"
+
+    # Not detected; provide helpful message.
+    examples = ", ".join(_expected_column_names("S0", "S1")[:4] + ["..."])
+    raise ValueError(
+        "Could not detect spectral column schema. "
+        "Expected either S0_410..S0_940 + S1_410..S1_940, or L_410..L_940 + R_410..R_940. "
+        f"Example columns: {examples}"
+    )
+
+
 def read_triad_raw_csv(
     path: str | Path,
     *,
-    num_sensors: int = NUM_SENSORS_DEFAULT,
     channels_per_sensor: int = CHANNELS_PER_SENSOR_DEFAULT,
 ) -> List[List[float]]:
     """
-    Read a Triad raw CSV file.
+    Read a Triad raw burst CSV file and return a list of rows (each row has 36 floats).
 
-    Returns a list of samples, where each sample is a list of floats with length
-    num_sensors * channels_per_sensor.
-
-    The reader is tolerant to:
-- header rows (non-numeric; skipped)
-- extra columns (ignored after expected length)
-
-    TODO: define final raw CSV schema (column names, timestamps, etc).
+    - Requires a header row.
+    - Ignores extra columns.
+    - Raises a clear error for missing required spectral columns.
     """
     path = Path(path)
-    expected_len = num_sensors * channels_per_sensor
-    samples: List[List[float]] = []
+    if not path.exists():
+        raise FileNotFoundError(str(path))
 
+    samples: List[List[float]] = []
     with path.open("r", newline="") as f:
-        reader = csv.reader(f)
+        reader = csv.DictReader(f)
+        if reader.fieldnames is None:
+            raise ValueError(f"Raw CSV has no header row: {path}")
+
+        p0, p1 = _detect_schema(reader.fieldnames)
+        required = _expected_column_names(p0, p1)
+
+        missing = [c for c in required if c not in reader.fieldnames]
+        if missing:
+            raise ValueError(f"Missing required spectral columns in {path}: {missing}")
+
         for row in reader:
-            if not row:
-                continue
-            # Try parse first expected_len items as floats; if fails, treat row as header.
-            try:
-                values = [_safe_float(v) for v in row[:expected_len]]
-            except ValueError:
-                continue
-            if len(values) != expected_len:
-                continue
+            values = [_safe_float(row[c]) for c in required]
+            if len(values) != 2 * channels_per_sensor:
+                raise ValueError(
+                    f"Expected {2 * channels_per_sensor} spectral values per row, got {len(values)} in {path}"
+                )
             samples.append(values)
 
     if not samples:
-        raise ValueError(
-            f"No numeric samples found in {path}. "
-            "This is expected early on; provide a raw CSV with at least 36 numeric values per row."
-        )
+        raise ValueError(f"No data rows found in raw CSV: {path}")
 
     return samples
 
@@ -167,6 +373,46 @@ def compute_burst_basic_features(samples: Sequence[Sequence[float]]) -> Dict[str
     return {"mean_36": means, "std_36": stds, "min_36": mins, "max_36": maxs}
 
 
+def _wl_index(wavelength_nm: int) -> int:
+    try:
+        return WAVELENGTHS_NM.index(wavelength_nm)
+    except ValueError as exc:
+        raise ValueError(f"Unknown wavelength {wavelength_nm} nm for Triad layout") from exc
+
+
+def compute_band_ratio_features(mean_36: Sequence[float]) -> Dict[str, float]:
+    """
+    Five ratios from the burst-mean spectrum (length 36).
+
+    Indices 0..17 = sensor 0 (S0_*), 18..35 = sensor 1 (S1_*), same wavelength order.
+    """
+    if len(mean_36) != 36:
+        raise ValueError(f"Expected 36 channels for ratios, got {len(mean_36)}")
+    m = [float(x) for x in mean_36]
+
+    i410 = _wl_index(410)
+    i485 = _wl_index(485)
+    i560 = _wl_index(560)
+    i610 = _wl_index(610)
+    i730 = _wl_index(730)
+    i940 = _wl_index(940)
+
+    def s0(k: int) -> float:
+        return m[k]
+
+    def s1(k: int) -> float:
+        return m[CHANNELS_PER_SENSOR_DEFAULT + k]
+
+    eps = _RATIO_EPS
+    return {
+        "ratio_S0_410_940": s0(i410) / (s0(i940) + eps),
+        "ratio_S1_410_940": s1(i410) / (s1(i940) + eps),
+        "ratio_S0_560_730": s0(i560) / (s0(i730) + eps),
+        "ratio_S1_560_730": s1(i560) / (s1(i730) + eps),
+        "ratio_S0_485_610": s0(i485) / (s0(i610) + eps),
+    }
+
+
 def compute_rms_features(
     sample_36: Sequence[float],
     *,
@@ -189,46 +435,246 @@ def extract_features_from_burst(
     samples: Sequence[Sequence[float]],
     *,
     channels_per_sensor: int = CHANNELS_PER_SENSOR_DEFAULT,
+    sam_refs: Optional[Mapping[str, np.ndarray]] = None,
 ) -> Dict[str, object]:
     """
     Extract a feature dict from a burst (list of samples).
+
+    If ``sam_refs`` is provided (36-D reference spectrum per class), adds ``sam_to_*`` angles.
     """
     basic = compute_burst_basic_features(samples)
     # Use mean_36 as representative vector for RMS calculations (baseline choice).
     rms = compute_rms_features(basic["mean_36"], channels_per_sensor=channels_per_sensor)
-    return {**basic, **rms}
+    ratios = compute_band_ratio_features(basic["mean_36"])
+    out: Dict[str, object] = {**basic, **rms, **ratios}
+    if sam_refs is not None:
+        out.update(compute_sam_features(basic["mean_36"], sam_refs))
+    return out
+
+
+def _flatten_features_for_csv(features: Mapping[str, object]) -> Dict[str, float]:
+    """
+    Convert internal feature dict into a flat dict suitable for CSV columns.
+    """
+    out: Dict[str, float] = {}
+    for key in ("mean_36", "std_36", "min_36", "max_36"):
+        arr = features[key]
+        if not isinstance(arr, list):
+            raise TypeError(f"Expected list for {key}, got {type(arr)}")
+        if len(arr) != 36:
+            raise ValueError(f"Expected 36 values for {key}, got {len(arr)}")
+        prefix = key.replace("_36", "")
+        for i, v in enumerate(arr):
+            out[f"{prefix}_{i}"] = float(v)
+
+    for key in ("rms_total", "rms_sensor_0", "rms_sensor_1"):
+        out[key] = float(features[key])  # type: ignore[arg-type]
+
+    ratio_keys = (
+        "ratio_S0_410_940",
+        "ratio_S1_410_940",
+        "ratio_S0_560_730",
+        "ratio_S1_560_730",
+        "ratio_S0_485_610",
+    )
+    for key in ratio_keys:
+        if key not in features:
+            raise KeyError(f"Missing ratio feature {key!r}")
+        out[key] = float(features[key])  # type: ignore[arg-type]
+
+    for key in ("sam_to_aluminium", "sam_to_steel", "sam_to_sand"):
+        if key in features:
+            out[key] = float(features[key])  # type: ignore[arg-type]
+
+    _assert_finite_features(out)
+    return out
+
+
+def _assert_finite_features(flat: Mapping[str, float]) -> None:
+    for k, v in flat.items():
+        if math.isnan(v) or math.isinf(v):
+            raise ValueError(f"Non-finite feature {k}={v}")
+
+
+def _read_metadata_rows(metadata_csv: Path) -> Iterator[Dict[str, str]]:
+    if not metadata_csv.exists():
+        raise FileNotFoundError(str(metadata_csv))
+    with metadata_csv.open("r", newline="") as f:
+        reader = csv.DictReader(f)
+        if reader.fieldnames is None:
+            raise ValueError(f"Metadata CSV has no header row: {metadata_csv}")
+        if "sample_id" not in reader.fieldnames:
+            raise ValueError(f"Metadata CSV missing required column 'sample_id': {metadata_csv}")
+        if "triad_file" not in reader.fieldnames:
+            raise ValueError(f"Metadata CSV missing required column 'triad_file': {metadata_csv}")
+        for row in reader:
+            if not row.get("sample_id"):
+                continue
+            yield row  # includes label/material/etc when present
+
+
+def build_processed_table(
+    *,
+    metadata_csv: Path,
+    raw_dir: Path,
+) -> Tuple[List[Dict[str, object]], Dict[str, np.ndarray]]:
+    """
+    Build one processed feature row per metadata entry.
+
+    Returns processed rows and SAM reference spectra (mean ``mean_36`` per class) for saving JSON.
+    """
+    pending: List[Tuple[Dict[str, str], List[List[float]]]] = []
+    missing_files: List[str] = []
+
+    for meta in _read_metadata_rows(metadata_csv):
+        sample_id = meta["sample_id"].strip()
+        triad_rel = (meta.get("triad_file") or "").strip()
+        if not triad_rel:
+            raise ValueError(f"metadata row for sample_id={sample_id} has empty triad_file")
+
+        raw_path = (raw_dir / triad_rel).resolve()
+        if not raw_path.exists():
+            missing_files.append(f"{sample_id}: {raw_path}")
+            continue
+
+        burst = read_triad_raw_csv(raw_path)
+        pending.append((dict(meta), burst))
+
+    if missing_files:
+        joined = "\n".join(missing_files[:20])
+        more = "" if len(missing_files) <= 20 else f"\n... and {len(missing_files) - 20} more"
+        raise FileNotFoundError(
+            "Missing raw triad files referenced by metadata:\n"
+            f"{joined}{more}\n\n"
+            "Fix by ensuring --raw-dir matches the triad_file paths."
+        )
+
+    if not pending:
+        raise ValueError("No processed rows produced (check metadata contents and raw files).")
+
+    labeled_means: List[Tuple[str, List[float]]] = []
+    for meta, burst in pending:
+        lm = (meta.get("label_material") or "").strip()
+        mean_36 = compute_burst_basic_features(burst)["mean_36"]
+        labeled_means.append((lm, mean_36))
+
+    sam_refs = build_sam_reference_spectra(labeled_means)
+
+    rows_out: List[Dict[str, object]] = []
+    for meta, burst in pending:
+        sample_id = meta["sample_id"].strip()
+        triad_rel = (meta.get("triad_file") or "").strip()
+        raw_path = (raw_dir / triad_rel).resolve()
+
+        feats = extract_features_from_burst(burst, sam_refs=sam_refs)
+        flat = _flatten_features_for_csv(feats)
+
+        out_row: Dict[str, object] = dict(meta)
+        out_row["sample_id"] = sample_id
+        out_row["triad_file_resolved"] = str(raw_path)
+        out_row.update(flat)
+        rows_out.append(out_row)
+
+    return rows_out, sam_refs
+
+
+def write_processed_csv(rows: Sequence[Mapping[str, object]], output_csv: Path) -> None:
+    output_csv.parent.mkdir(parents=True, exist_ok=True)
+
+    # Stable column ordering: keep some metadata columns first if present.
+    preferred_first = [
+        "sample_id",
+        "label_object",
+        "label_material",
+        "triad_file",
+        "triad_file_resolved",
+        "sand_type",
+        "lysforhold",
+        "avstand_cm",
+        "position_id",
+        "angle_id",
+        "diameter_mm",
+        "size_group",
+        "surface_condition",
+        "buried_level",
+        "run_id",
+    ]
+    all_keys: List[str] = sorted({k for r in rows for k in r.keys()})
+    fieldnames: List[str] = []
+    for k in preferred_first:
+        if k in all_keys:
+            fieldnames.append(k)
+    for k in all_keys:
+        if k not in fieldnames:
+            fieldnames.append(k)
+
+    with output_csv.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for r in rows:
+            writer.writerow({k: r.get(k, "") for k in fieldnames})
 
 
 def main(argv: Iterable[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Extract Triad features from a raw CSV (skeleton).")
-    parser.add_argument("--raw_csv", type=str, required=False, help="Path to raw triad CSV file.")
-    parser.add_argument("--print_keys", action="store_true", help="Print feature keys and exit.")
+    parser = argparse.ArgumentParser(description="Extract Triad features and build processed CSV.")
+    parser.add_argument(
+        "--metadata",
+        type=str,
+        default="ml/datasets/metadata.csv",
+        help="Path to metadata CSV (must include sample_id and triad_file).",
+    )
+    parser.add_argument(
+        "--raw-dir",
+        type=str,
+        default="ml/datasets",
+        help="Base directory used to resolve triad_file paths from metadata.",
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default="ml/datasets/processed/triad_features.csv",
+        help="Where to write processed feature CSV.",
+    )
     args = parser.parse_args(list(argv) if argv is not None else None)
 
-    if args.print_keys:
-        example = {
-            **compute_burst_basic_features([[0.0] * 36, [0.0] * 36]),
-            **compute_rms_features([0.0] * 36),
+    metadata_csv = Path(args.metadata)
+    raw_dir = Path(args.raw_dir)
+    output_csv = Path(args.output)
+
+    try:
+        rows, sam_refs = build_processed_table(metadata_csv=metadata_csv, raw_dir=raw_dir)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[extract_triad_features] ERROR: {exc}")
+        return 2
+
+    write_processed_csv(rows, output_csv)
+    sam_json = output_csv.parent / "sam_reference_spectra.json"
+    save_sam_reference_spectra(sam_json, sam_refs)
+    print(f"[extract_triad_features] Wrote processed features: {output_csv} (rows={len(rows)})")
+    print(f"[extract_triad_features] Wrote SAM reference spectra: {sam_json}")
+    if rows:
+        sample_keys = rows[0].keys()
+        numeric_feat = [
+            k
+            for k in sample_keys
+            if k.startswith(("mean_", "std_", "min_", "max_", "rms_", "ratio_", "sam_to_"))
+        ]
+        ratio_preview = {
+            k: float(rows[0][k])  # type: ignore[arg-type]
+            for k in sorted(sample_keys)
+            if str(k).startswith("ratio_")
         }
-        print("Feature keys:", ", ".join(sorted(example.keys())))
-        return 0
-
-    if not args.raw_csv:
-        print("No --raw_csv provided. Example usage:")
-        print("  python ml/training/extract_triad_features.py --raw_csv ml/datasets/examples/example_triad.csv")
-        return 0
-
-    raw_path = Path(args.raw_csv)
-    samples = read_triad_raw_csv(raw_path)
-    features = extract_features_from_burst(samples)
-
-    print(f"Read {len(samples)} samples from {raw_path}")
-    for k, v in features.items():
-        if isinstance(v, list):
-            print(f"{k}: len={len(v)} first3={v[:3]}")
-        else:
-            print(f"{k}: {v}")
-
+        sam_preview = {
+            k: float(rows[0][k])  # type: ignore[arg-type]
+            for k in sorted(sample_keys)
+            if str(k).startswith("sam_to_")
+        }
+        print(
+            f"[extract_triad_features] Numeric feature columns: {len(numeric_feat)} "
+            "(36×4 + 3 RMS + 5 ratios + 3 SAM)."
+        )
+        print(f"[extract_triad_features] Example ratio_* (first row): {ratio_preview}")
+        print(f"[extract_triad_features] Example sam_to_* (first row): {sam_preview}")
     return 0
 
 

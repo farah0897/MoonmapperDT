@@ -11,6 +11,7 @@ __pycache__/
 __pycache__/
 *.pyc
 .venv/
+.venv-ml/
 venv/
 
 # ROS2 build outputs
@@ -28,6 +29,9 @@ ml/models/*.pkl
 ml/models/*.pt
 ml/models/*.pth
 ml/models/*.onnx
+ml/vision/models/*.pt
+ml/vision/models/*.pth
+ml/vision/models/*.onnx
 src/moonmapper_ml/models/*.joblib
 src/moonmapper_ml/models/*.pkl
 src/moonmapper_ml/models/*.pt
