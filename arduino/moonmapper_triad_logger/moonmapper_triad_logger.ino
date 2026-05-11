@@ -155,7 +155,7 @@ void printCsvRow(const String &sampleId, uint8_t burstIndex, unsigned long ts, c
   for (uint8_t i = 0; i < NUM_CHANNELS; i++) {
     // Korrigerte verdier kan bli negative; for normalisering av spektrum-form
     // bruker vi kun positive bidrag for å unngå at sum = 0 gir ustabilt forhold.
-    if (s0[i] > 0.0f) sum0 += sampleIds0[i];
+    if (s0[i] > 0.0f) sum0 += s0[i];
     if (s1[i] > 0.0f) sum1 += s1[i];
   }
   const float inv0 = (sum0 > 1e-9f) ? (1.0f / sum0) : 0.0f;

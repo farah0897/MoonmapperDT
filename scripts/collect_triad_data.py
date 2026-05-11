@@ -4,7 +4,12 @@ Collect a Triad BURST over serial and write to `ml/datasets/raw/`.
 Wraps `ml/data_collection/collect_triad_burst.py` with defaults under `ml/datasets/`.
 
 Usage:
-  python3 scripts/collect_triad_data.py --port /dev/ttyACM0 --sample-id S0001 --append-metadata
+  Windows:
+    python scripts/collect_triad_data.py --list-ports
+    python scripts/collect_triad_data.py --port COM3 --sample-id S0001 --append-metadata
+
+  Linux/WSL:
+    python3 scripts/collect_triad_data.py --port /dev/ttyACM0 --sample-id S0001 --append-metadata
 """
 
 from __future__ import annotations

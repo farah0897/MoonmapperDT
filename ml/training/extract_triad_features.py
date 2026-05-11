@@ -1,66 +1,79 @@
 """
-Feature extraction for SparkFun AS7265X Triad spectrometer sensors.
+Feature-ekstraksjon for SparkFun AS7265X Triad-spektrometre.
 
-This script implements a *working baseline* for phase 1 (Triad-only):
-- Two sensors, 18 channels each => 36 channels total (do not average away sensors).
-- Reads per-sample "burst" raw CSV files (multiple rows) and aggregates to one feature row.
-- Joins features with `metadata.csv` via `sample_id`.
-- Writes a processed feature table CSV that the training scripts can consume.
+Dette scriptet er en fungerende grunnløsning for fase 1, der vi bare bruker Triad-data:
+- To sensorer med 18 kanaler hver gir totalt 36 spektralkanaler.
+- Sensorene beholdes separat, slik at vi ikke mister informasjon ved å slå dem sammen.
+- Scriptet leser rå "burst"-CSV-filer, der en fil inneholder flere målinger av samme sample.
+- Alle målingene i en burst-fil samles til en feature-rad.
+- Feature-raden kobles med `metadata.csv` ved hjelp av `sample_id`.
+- Til slutt skrives en prosessert feature-tabell som treningsscriptet kan bruke.
 
-Raw CSV formats supported
+Støttede rådataformater
+-----------------------
+Råfilen fra Triad må inneholde 36 spektralkolonner. Scriptet støtter to navnekonvensjoner:
+
+1) Sensor-prefiks:
+   - S0_410 ... S0_940 (18 kolonner)
+   - S1_410 ... S1_940 (18 kolonner)
+
+2) Venstre/høyre-prefiks:
+   - L_410 ... L_940 (18 kolonner)
+   - R_410 ... R_940 (18 kolonner)
+
+Filen kan ha ekstra kolonner. Disse ignoreres. Hvis spektralkolonner mangler,
+gir scriptet en tydelig feilmelding.
+
+Prosessert feature-output
 -------------------------
-The raw Triad CSV must contain *36 spectral columns* and can use either naming convention:
-
-1) Sensor-prefixed:
-   - S0_410 ... S0_940 (18 columns)
-   - S1_410 ... S1_940 (18 columns)
-
-2) Left/Right-prefixed:
-   - L_410 ... L_940 (18 columns)
-   - R_410 ... R_940 (18 columns)
-
-The file may contain extra columns (ignored). Missing spectral columns will raise a clear error.
-
-Processed feature output
-------------------------
-For each sample (burst file), we compute per-channel statistics across burst rows:
+For hver sample, altså hver burst-fil, beregnes statistikk per spektralkanal:
 - mean_0..mean_35
 - std_0..std_35
 - min_0..min_35
 - max_0..max_35
-and scalar RMS:
+
+I tillegg beregnes RMS-features:
 - rms_total, rms_sensor_0, rms_sensor_1
 
-Additionally (from the **per-channel burst mean** vector ``mean_36`` only), five simple
-band ratios with fixed wavelengths — intended to capture spectral **shape** and reduce
-sensitivity to uniform intensity scaling:
-- ratio_S0_410_940, ratio_S1_410_940 — short vs long wavelength per sensor
-- ratio_S0_560_730, ratio_S1_560_730 — visible vs “red edge” per sensor
-- ratio_S0_485_610 — green–orange band ratio on sensor 0 (extra shape cue)
+Fra middelverdivektoren `mean_36` beregnes også fem enkle kanalforhold
+med faste bølgelengder. Disse brukes for å beskrive spektral form og gjøre
+features mindre følsomme for lik endring i total signalstyrke:
+- ratio_S0_410_940, ratio_S1_410_940: kort mot lang bølgelengde per sensor
+- ratio_S0_560_730, ratio_S1_560_730: synlig område mot "red edge" per sensor
+- ratio_S0_485_610: grønn/oransje-forhold på sensor 0
 
-Ratios use numerator / (denominator + eps), eps = 1e-6.
+Kanalforhold beregnes som teller / (nevner + eps), der eps = 1e-6.
 
-Additionally, **Spectral Angle Mapper (SAM)** angles (radians) between the burst-mean
-spectrum ``mean_36`` and three **class reference spectra** (same 36-D vectors):
+Scriptet beregner også Spectral Angle Mapper (SAM). SAM er vinkelen, i radianer,
+mellom sample-spekteret `mean_36` og referansespekter for ulike klasser.
+Referansespektrene har samme 36 dimensjoner som sample-spekteret.
 
-- References are the **mean** of ``mean_36`` over rows whose ``label_material`` maps
-  to ``aluminium``, ``steel``, or ``sand`` (see ``_canonical_sam_class``).
-- Per sample: ``sam_to_aluminium``, ``sam_to_steel``, ``sam_to_sand``.
+- Referanser beregnes som gjennomsnittet av `mean_36` for rader der
+  `label_material` mappes til `aluminium`, `steel` eller `sand`
+  (se `_canonical_sam_class`).
+- For hver sample lages: `sam_to_aluminium`, `sam_to_steel`, `sam_to_sand`.
 
-SAM: ``theta = arccos( clip( (x·r) / (||x|| ||r|| + eps), [-1,1] ) )`` with ``eps=1e-8``.
-If a class has no samples, the reference is the zero vector (SAM degrades to ~π/2).
-References are saved next to the processed CSV as ``sam_reference_spectra.json`` for inference.
+SAM-formel:
+`theta = arccos(clip((x dot r) / (||x|| ||r|| + eps), [-1, 1]))`, med eps = 1e-8.
+Hvis en klasse ikke har samples, brukes en nullvektor som referanse.
+Da blir SAM omtrent pi/2 og gir lite nyttig klasseinformasjon.
 
-**Note:** References are computed from **all rows in the current metadata file** before
-train/val/test split; for strict evaluation you can point extraction at training-only metadata.
+Referansene lagres ved siden av prosessert CSV som `sam_reference_spectra.json`.
+Denne filen brukes senere under inferens/prediksjon.
 
-CLI
----
---metadata  Path to metadata CSV (must include sample_id and triad_file)
---raw-dir   Base directory where triad_file paths are resolved
---output    Output processed CSV (default: ml/datasets/processed/triad_features.csv)
+Merk:
+Referansespektrene beregnes fra alle rader i metadatafilen før train/val/test-splitt.
+For helt streng evaluering kan feature-ekstraksjon kjøres med metadata som bare
+inneholder treningsdata.
 
-The script is designed to be safe even before real datasets exist: it will explain what is missing.
+Kommandolinje
+-------------
+--metadata  Sti til metadata-CSV. Må inneholde sample_id og triad_file.
+--raw-dir   Basemappe der triad_file-stiene løses opp.
+--output    Hvor prosessert CSV skal lagres.
+            Standard: ml/datasets/processed/triad_features.csv
+
+Scriptet er laget for å gi tydelige feilmeldinger også før et ekte datasett finnes.
 """
 
 from __future__ import annotations
@@ -431,6 +444,32 @@ def compute_rms_features(
     }
 
 
+def compute_derivative_features(
+    mean_36: Sequence[float],
+    *,
+    channels_per_sensor: int = CHANNELS_PER_SENSOR_DEFAULT,
+) -> Dict[str, List[float]]:
+    """
+    Beregn enkle spektrale derivater fra middel-spekteret.
+
+    Her betyr "derivative" bare forskjellen mellom to nabokanaler:
+    neste bølgelengde minus forrige bølgelengde.
+
+    Dette beskriver formen på kurven bedre enn bare rå kanalverdi. For eksempel
+    kan to målinger ha lik total styrke, men ulik stigning/fall mellom bølgelengder.
+    """
+    if len(mean_36) != 2 * channels_per_sensor:
+        raise ValueError(f"Expected {2 * channels_per_sensor} channels for derivatives, got {len(mean_36)}")
+
+    s0, s1 = _split_sensors(mean_36, channels_per_sensor=channels_per_sensor)
+    derivative_s0 = [float(s0[i + 1]) - float(s0[i]) for i in range(channels_per_sensor - 1)]
+    derivative_s1 = [float(s1[i + 1]) - float(s1[i]) for i in range(channels_per_sensor - 1)]
+    return {
+        "derivative_s0": derivative_s0,
+        "derivative_s1": derivative_s1,
+    }
+
+
 def extract_features_from_burst(
     samples: Sequence[Sequence[float]],
     *,
@@ -446,7 +485,8 @@ def extract_features_from_burst(
     # Use mean_36 as representative vector for RMS calculations (baseline choice).
     rms = compute_rms_features(basic["mean_36"], channels_per_sensor=channels_per_sensor)
     ratios = compute_band_ratio_features(basic["mean_36"])
-    out: Dict[str, object] = {**basic, **rms, **ratios}
+    derivatives = compute_derivative_features(basic["mean_36"], channels_per_sensor=channels_per_sensor)
+    out: Dict[str, object] = {**basic, **rms, **ratios, **derivatives}
     if sam_refs is not None:
         out.update(compute_sam_features(basic["mean_36"], sam_refs))
     return out
@@ -485,6 +525,17 @@ def _flatten_features_for_csv(features: Mapping[str, object]) -> Dict[str, float
     for key in ("sam_to_aluminium", "sam_to_steel", "sam_to_sand"):
         if key in features:
             out[key] = float(features[key])  # type: ignore[arg-type]
+
+    for key, prefix in (("derivative_s0", "derivative_S0"), ("derivative_s1", "derivative_S1")):
+        arr = features.get(key)
+        if not isinstance(arr, list):
+            raise TypeError(f"Expected list for {key}, got {type(arr)}")
+        if len(arr) != CHANNELS_PER_SENSOR_DEFAULT - 1:
+            raise ValueError(f"Expected {CHANNELS_PER_SENSOR_DEFAULT - 1} values for {key}, got {len(arr)}")
+        for i, v in enumerate(arr):
+            wl_a = WAVELENGTHS_NM[i]
+            wl_b = WAVELENGTHS_NM[i + 1]
+            out[f"{prefix}_{wl_a}_{wl_b}"] = float(v)
 
     _assert_finite_features(out)
     return out
@@ -657,7 +708,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         numeric_feat = [
             k
             for k in sample_keys
-            if k.startswith(("mean_", "std_", "min_", "max_", "rms_", "ratio_", "sam_to_"))
+            if k.startswith(("mean_", "std_", "min_", "max_", "rms_", "ratio_", "sam_to_", "derivative_"))
         ]
         ratio_preview = {
             k: float(rows[0][k])  # type: ignore[arg-type]
@@ -671,7 +722,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         }
         print(
             f"[extract_triad_features] Numeric feature columns: {len(numeric_feat)} "
-            "(36×4 + 3 RMS + 5 ratios + 3 SAM)."
+            "(36×4 + 3 RMS + 5 ratios + 3 SAM + 34 derivatives)."
         )
         print(f"[extract_triad_features] Example ratio_* (first row): {ratio_preview}")
         print(f"[extract_triad_features] Example sam_to_* (first row): {sam_preview}")

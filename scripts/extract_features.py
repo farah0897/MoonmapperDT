@@ -1,8 +1,13 @@
 """
-Extract Triad features using `ml/datasets/metadata.csv` and raw files under `ml/datasets/`.
+Kjør feature-ekstraksjon for Triad-data.
 
-Writes:
-  ml/datasets/processed/triad_features.csv
+Dette scriptet er bare en enkel snarvei. Selve logikken ligger i:
+ml/training/extract_triad_features.py
+
+Standard input/output:
+- Leser metadata fra ml/datasets/metadata.csv
+- Leser råfiler under ml/datasets/
+- Skriver features til ml/datasets/processed/triad_features.csv
 """
 
 from __future__ import annotations
@@ -13,28 +18,51 @@ import sys
 from typing import List, Optional
 
 
+def har_argument(argumenter: List[str], flagg: str) -> bool:
+    """Sjekker om brukeren allerede har sendt inn et bestemt terminalflagg."""
+    for argument in argumenter:
+        if argument == flagg:
+            return True
+        if argument.startswith(flagg + "="):
+            return True
+    return False
+
+
+def legg_til_standard_argumenter(argumenter: List[str]) -> List[str]:
+    """
+    Legger til standardstier hvis brukeren ikke har skrevet dem selv.
+
+    Dette gjør at scriptet kan kjøres enkelt uten mange lange argumenter.
+    """
+    if not har_argument(argumenter, "--metadata"):
+        argumenter.extend(["--metadata", "ml/datasets/metadata.csv"])
+
+    if not har_argument(argumenter, "--raw-dir"):
+        argumenter.extend(["--raw-dir", "ml/datasets"])
+
+    if not har_argument(argumenter, "--output"):
+        argumenter.extend(["--output", "ml/datasets/processed/triad_features.csv"])
+
+    return argumenter
+
+
 def main(argv: Optional[List[str]] = None) -> int:
-    from ml.training.extract_triad_features import main as impl_main  # type: ignore
+    from ml.training.extract_triad_features import main as ekte_main  # type: ignore
 
     if argv is None:
-        argv = list(sys.argv[1:])
+        argumenter = list(sys.argv[1:])
+    else:
+        argumenter = list(argv)
 
-    def _has(flag: str) -> bool:
-        return any(a == flag or a.startswith(flag + "=") for a in argv)
+    argumenter = legg_til_standard_argumenter(argumenter)
 
-    if not _has("--metadata"):
-        argv.extend(["--metadata", "ml/datasets/metadata.csv"])
-    if not _has("--raw-dir"):
-        argv.extend(["--raw-dir", "ml/datasets"])
-    if not _has("--output"):
-        argv.extend(["--output", "ml/datasets/processed/triad_features.csv"])
-
-    old_argv = sys.argv[:]
+    # Den importerte main-funksjonen leser sys.argv, derfor setter vi den midlertidig.
+    gammel_argv = sys.argv[:]
     try:
-        sys.argv = [old_argv[0], *argv]
-        return int(impl_main())
+        sys.argv = [gammel_argv[0]] + argumenter
+        return int(ekte_main())
     finally:
-        sys.argv = old_argv
+        sys.argv = gammel_argv
 
 
 if __name__ == "__main__":

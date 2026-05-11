@@ -1,12 +1,15 @@
 """
-Fill missing/default fields in `ml/datasets/metadata.csv` safely (no manual editing).
+Fyll inn manglende standardverdier i `ml/datasets/metadata.csv`.
 
-What it does:
-- Sets label_material based on label_object mapping (e.g. aluminium_1krone -> aluminium).
-  If label_material is empty or "ukjent", it will be replaced by the mapped value (if known).
-- Fills empty run_id using a simple per-object sequence:
-  For each label_object, find the minimum numeric sample index among rows in the CSV.
-  Then for each row: seq = sample_num - (min_sample_num - 1) and set run_id = R{seq:02d}.
+Scriptet brukes etter datainnsamling for å gjøre metadata mer komplett før
+feature-ekstraksjon og ML-trening.
+
+Det gjør to ting:
+- Setter `label_material` basert på `label_object`, hvis materialfeltet mangler
+  eller står som `ukjent`.
+- Fyller tom `run_id` med en enkel løpenummer-ID per objektklasse, f.eks. R01.
+
+Objekt- og materialnavnene følger `ml/configs/labels.yaml`.
 """
 
 from __future__ import annotations
@@ -17,102 +20,199 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 
-LABEL_TO_MATERIAL = {
-    "aluminium_1krone": "aluminium",
-    "jern_stang": "jern",
-    "staal_10krone": "staal",
-    "titan_skru": "titan",
+DEFAULT_METADATA_PATH = "ml/datasets/metadata.csv"
+UNKNOWN_MATERIAL = "ukjent"
+
+REQUIRED_COLUMNS = {"sample_id", "label_object", "label_material"}
+
+# Må samsvare med ml/configs/labels.yaml.
+LABEL_OBJECT_TO_MATERIAL = {
+    "aluminium_kule": "aluminium",
+    "jern_kule": "jern",
+    "stål_kule": "stål",
+    "titan_kule": "titan",
 }
 
 
-DEFAULTS = {}
-
-
 def _parse_sample_num(sample_id: str) -> Optional[int]:
+    """
+    Hent det numeriske tallet fra en sample_id.
+
+    Eksempel:
+    - S0001 -> 1
+    - S0042 -> 42
+
+    Returnerer None hvis formatet ikke er forventet. Da lar vi raden være i fred
+    i stedet for å gjette.
+    """
     sample_id = sample_id.strip()
     if not sample_id.startswith("S"):
         return None
+
     rest = sample_id[1:]
     if not rest.isdigit():
         return None
+
     return int(rest)
 
 
-def _fmt_id(prefix: str, n: int) -> str:
-    if n < 100:
-        return f"{prefix}{n:02d}"
-    return f"{prefix}{n}"
+def _format_run_id(sequence_number: int) -> str:
+    """Lag run_id på formen R01, R02, ..., R100."""
+    if sequence_number < 100:
+        return f"R{sequence_number:02d}"
+    return f"R{sequence_number}"
+
+
+def _read_metadata_csv(path: Path) -> tuple[List[str], List[Dict[str, str]]]:
+    """Les metadata.csv og kontroller at nødvendige kolonner finnes."""
+    if not path.exists():
+        raise SystemExit(f"Metadata not found: {path}")
+
+    with path.open("r", newline="") as file:
+        reader = csv.DictReader(file)
+        if not reader.fieldnames:
+            raise SystemExit("metadata.csv has no header")
+
+        fieldnames = list(reader.fieldnames)
+        missing = REQUIRED_COLUMNS - set(fieldnames)
+        if missing:
+            raise SystemExit(f"metadata.csv missing columns: {sorted(missing)}")
+
+        rows = [dict(row) for row in reader]
+
+    return fieldnames, rows
+
+
+def _find_first_sample_number_per_label(rows: List[Dict[str, str]]) -> Dict[str, int]:
+    """
+    Finn laveste sample-nummer per objektklasse.
+
+    Dette brukes for å lage run_id relativt innen hver klasse. Hvis første
+    `stål_kule` har sample_id S0010, blir den R01, ikke R10.
+    """
+    first_sample_by_label: Dict[str, int] = {}
+
+    for row in rows:
+        sample_id = str(row.get("sample_id", "")).strip()
+        label_object = str(row.get("label_object", "")).strip()
+        sample_number = _parse_sample_num(sample_id)
+
+        if not label_object or sample_number is None:
+            continue
+
+        current_min = first_sample_by_label.get(label_object)
+        if current_min is None or sample_number < current_min:
+            first_sample_by_label[label_object] = sample_number
+
+    return first_sample_by_label
+
+
+def _fill_label_material(row: Dict[str, str]) -> int:
+    """
+    Fyll `label_material` fra `label_object` når det er trygt.
+
+    Vi overskriver bare hvis materialet mangler eller er `ukjent`. Hvis noen har
+    skrevet inn et annet materiale manuelt, lar vi det stå.
+    """
+    label_object = str(row.get("label_object", "")).strip()
+    target_material = LABEL_OBJECT_TO_MATERIAL.get(label_object)
+    if target_material is None:
+        return 0
+
+    current_material = str(row.get("label_material", "")).strip()
+    if current_material and current_material.lower() != UNKNOWN_MATERIAL:
+        return 0
+
+    row["label_material"] = target_material
+    return 1
+
+
+def _fill_run_id(row: Dict[str, str], first_sample_by_label: Dict[str, int]) -> int:
+    """
+    Fyll `run_id` hvis kolonnen finnes og verdien er tom.
+
+    `run_id` blir et løpenummer per objektklasse. Dette gjør det lettere å se
+    hvilken repetisjon/runde en måling er i datasettet.
+    """
+    if "run_id" not in row or str(row.get("run_id", "")).strip():
+        return 0
+
+    label_object = str(row.get("label_object", "")).strip()
+    sample_number = _parse_sample_num(str(row.get("sample_id", "")).strip())
+    first_sample_number = first_sample_by_label.get(label_object)
+
+    if sample_number is None or first_sample_number is None:
+        return 0
+
+    sequence_number = sample_number - (first_sample_number - 1)
+    row["run_id"] = _format_run_id(sequence_number)
+    return 1
+
+
+def fill_metadata_defaults(rows: List[Dict[str, str]]) -> int:
+    """
+    Fyll alle støttede standardverdier i radene.
+
+    Returnerer antall felt som ble oppdatert.
+    """
+    first_sample_by_label = _find_first_sample_number_per_label(rows)
+    updates = 0
+
+    for row in rows:
+        updates += _fill_label_material(row)
+        updates += _fill_run_id(row, first_sample_by_label)
+
+    return updates
+
+
+def _write_backup(path: Path) -> Path:
+    """Lag en enkel backup før vi endrer metadatafilen."""
+    backup_path = path.with_suffix(path.suffix + ".bak")
+    backup_path.write_bytes(path.read_bytes())
+    return backup_path
+
+
+def _write_metadata_csv(path: Path, fieldnames: List[str], rows: List[Dict[str, str]]) -> None:
+    """
+    Skriv metadata atomisk via en midlertidig fil.
+
+    Først skrives `metadata.csv.tmp`. Når skrivingen er ferdig, erstatter den
+    originalfilen. Dette reduserer risikoen for en halvskrevet CSV ved feil.
+    """
+    temporary_path = path.with_suffix(path.suffix + ".tmp")
+
+    with temporary_path.open("w", newline="") as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    temporary_path.replace(path)
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    """Definer terminalargumentene for scriptet."""
+    parser = argparse.ArgumentParser(description="Fill missing fields in metadata.csv safely.")
+    parser.add_argument("--metadata-path", default=DEFAULT_METADATA_PATH)
+    parser.add_argument("--backup", action="store_true", help="Write metadata.csv.bak before modifying.")
+    return parser
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    p = argparse.ArgumentParser(description="Fill missing fields in metadata.csv safely.")
-    p.add_argument("--metadata-path", default="ml/datasets/metadata.csv")
-    p.add_argument("--backup", action="store_true", help="Write metadata.csv.bak before modifying.")
-    args = p.parse_args(argv)
+    """Kjør utfylling av metadata fra terminal."""
+    parser = _build_parser()
+    args = parser.parse_args(argv)
 
-    meta_path = Path(args.metadata_path)
-    if not meta_path.exists():
-        raise SystemExit(f"Metadata not found: {meta_path}")
-
-    rows: List[Dict[str, str]] = []
-    with meta_path.open("r", newline="") as f:
-        reader = csv.DictReader(f)
-        if not reader.fieldnames:
-            raise SystemExit("metadata.csv has no header")
-        fieldnames = list(reader.fieldnames)
-        required = {"sample_id", "label_object", "label_material"}
-        missing = required - set(fieldnames)
-        if missing:
-            raise SystemExit(f"metadata.csv missing columns: {sorted(missing)}")
-        for r in reader:
-            rows.append(dict(r))
-
-    # Compute per-label min sample number
-    min_by_label: Dict[str, int] = {}
-    for r in rows:
-        sid = str(r.get("sample_id", "")).strip()
-        label = str(r.get("label_object", "")).strip()
-        n = _parse_sample_num(sid)
-        if not label or n is None:
-            continue
-        cur = min_by_label.get(label)
-        if cur is None or n < cur:
-            min_by_label[label] = n
-
-    updated = 0
-    for r in rows:
-        label = str(r.get("label_object", "")).strip()
-        sid = str(r.get("sample_id", "")).strip()
-        n = _parse_sample_num(sid)
-
-        # label_material
-        material_target = LABEL_TO_MATERIAL.get(label, "")
-        if material_target:
-            lm = str(r.get("label_material", "")).strip()
-            if (not lm) or lm.lower() == "ukjent":
-                r["label_material"] = material_target
-                updated += 1
-
-        # run_id
-        if n is not None and label and label in min_by_label:
-            seq = n - (min_by_label[label] - 1)
-            if "run_id" in r and not str(r.get("run_id", "")).strip():
-                r["run_id"] = _fmt_id("R", seq)
-                updated += 1
+    metadata_path = Path(args.metadata_path)
+    fieldnames, rows = _read_metadata_csv(metadata_path)
+    updated_fields = fill_metadata_defaults(rows)
 
     if args.backup:
-        bak = meta_path.with_suffix(meta_path.suffix + ".bak")
-        bak.write_bytes(meta_path.read_bytes())
-        print(f"[fill_metadata_defaults] Backup written: {bak}")
+        backup_path = _write_backup(metadata_path)
+        print(f"[fill_metadata_defaults] Backup written: {backup_path}")
 
-    tmp = meta_path.with_suffix(meta_path.suffix + ".tmp")
-    with tmp.open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
-    tmp.replace(meta_path)
+    _write_metadata_csv(metadata_path, fieldnames, rows)
 
-    print(f"[fill_metadata_defaults] Done. Applied {updated} field updates in {meta_path}")
+    print(f"[fill_metadata_defaults] Done. Applied {updated_fields} field updates in {metadata_path}")
     return 0
 
 

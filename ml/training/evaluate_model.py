@@ -1,179 +1,211 @@
 """
-Evaluate a trained model artifact against a feature CSV.
+Evaluer en trent maskinlæringsmodell på testdata.
 
-Features should come from:
-  ml/training/extract_triad_features.py
+Dette scriptet brukes etter at modellen er trent med Random Forest. Det leser
+inn en lagret modell, en label encoder og en CSV-fil med features. Deretter
+skriver det ut hvor bra modellen gjør det.
 
-This script:
-- Loads a model + label encoder (joblib)
-- Reads a CSV (default: ml/datasets/processed/test.csv)
-- Drops non-feature columns automatically
-- Prints confusion_matrix and classification_report
-- Saves confusion matrix as PNG *if matplotlib is available*
-
-Dependencies are NOT installed automatically.
+Standard input:
+- ml/models/random_forest.joblib
+- ml/models/label_encoder.joblib
+- ml/datasets/processed/test.csv
 """
 
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from typing import List
 
-from typing import List, Set
+
+IKKE_FEATURE_KOLONNER = {
+    "sample_id",
+    "label_material",
+    "label_object",
+    "sand_type",
+    "lysforhold",
+    "avstand_cm",
+    "position_id",
+    "angle_id",
+    "triad_file",
+    "triad_file_resolved",
+    "diameter_mm",
+    "size_group",
+    "surface_condition",
+    "buried_level",
+    "run_id",
+}
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Evaluate saved model (skeleton).")
+def lag_parser() -> argparse.ArgumentParser:
+    """Lager terminalargumentene som brukeren kan sende inn."""
+    parser = argparse.ArgumentParser(description="Evaluer lagret Random Forest-modell.")
     parser.add_argument(
         "--model_path",
         type=str,
         default="ml/models/random_forest.joblib",
-        help="Path to joblib model artifact.",
+        help="Sti til lagret modell.",
     )
     parser.add_argument(
         "--encoder_path",
         type=str,
         default="ml/models/label_encoder.joblib",
-        help="Path to joblib label encoder.",
+        help="Sti til lagret label encoder.",
     )
     parser.add_argument(
         "--input",
         type=str,
         default="ml/datasets/processed/test.csv",
-        help="Path to feature CSV (e.g. test.csv from split_dataset.py).",
+        help="CSV-fil med test-features.",
     )
     parser.add_argument(
         "--label-column",
         type=str,
         default="label_object",
-        help="Label column name.",
+        help="Kolonnen som inneholder fasit/label.",
     )
     parser.add_argument(
         "--cm-out",
         type=str,
         default="ml/datasets/processed/confusion_matrix.png",
-        help="Where to write confusion matrix PNG (if matplotlib is available).",
+        help="Hvor confusion matrix-bilde skal lagres hvis matplotlib finnes.",
     )
+    return parser
+
+
+def sjekk_at_fil_finnes(sti: Path, melding: str) -> bool:
+    """Sjekker om en fil finnes og skriver en enkel melding hvis den mangler."""
+    if sti.exists():
+        return True
+
+    print(f"Fant ikke fil: {sti}")
+    print(melding)
+    return False
+
+
+def finn_feature_kolonner(data, label_kolonne: str, pd) -> List[str]:
+    """
+    Finn kolonnene som faktisk skal brukes av modellen.
+
+    Metadata-kolonner, som sample_id og label_material, skal ikke inn i modellen.
+    Vi tar bare med numeriske kolonner, fordi Random Forest forventer tall.
+    """
+    feature_kolonner: List[str] = []
+
+    for kolonne in data.columns:
+        if kolonne == label_kolonne:
+            continue
+        if kolonne in IKKE_FEATURE_KOLONNER:
+            continue
+        if pd.api.types.is_numeric_dtype(data[kolonne]):
+            feature_kolonner.append(kolonne)
+
+    return feature_kolonner
+
+
+def lag_confusion_matrix_bilde(cm, output_sti: Path) -> None:
+    """
+    Prøv å lagre confusion matrix som bilde.
+
+    Dette er ikke kritisk for evalueringen. Hvis matplotlib mangler, hopper vi
+    bare over bildet og beholder tekst-resultatene.
+    """
+    try:
+        import matplotlib.pyplot as plt  # type: ignore
+    except Exception:
+        print("matplotlib er ikke tilgjengelig. Hopper over PNG-output.")
+        return
+
+    try:
+        figur = plt.figure(figsize=(6, 6))
+        akse = figur.add_subplot(1, 1, 1)
+        akse.imshow(cm, interpolation="nearest")
+        akse.set_title("Confusion matrix")
+        akse.set_xlabel("Predicted")
+        akse.set_ylabel("True")
+        plt.tight_layout()
+
+        output_sti.parent.mkdir(parents=True, exist_ok=True)
+        figur.savefig(output_sti, dpi=150)
+        plt.close(figur)
+        print(f"Lagret confusion matrix PNG: {output_sti}")
+    except Exception:
+        print("Klarte ikke å lagre confusion matrix-bilde. Hopper over PNG-output.")
+
+
+def main() -> int:
+    parser = lag_parser()
     args = parser.parse_args()
 
-    model_path = Path(args.model_path)
-    enc_path = Path(args.encoder_path)
-    input_path = Path(args.input)
+    modell_sti = Path(args.model_path)
+    encoder_sti = Path(args.encoder_path)
+    input_sti = Path(args.input)
 
-    if not model_path.exists():
-        print(f"Model not found: {model_path}")
-        print("Train and save a model first (train_random_forest.py).")
+    if not sjekk_at_fil_finnes(modell_sti, "Tren og lagre modellen først."):
         return 0
-
-    if not enc_path.exists():
-        print(f"Label encoder not found: {enc_path}")
-        print("Train and save an encoder first (train_random_forest.py).")
+    if not sjekk_at_fil_finnes(encoder_sti, "Tren og lagre label encoder først."):
         return 0
-
-    if not input_path.exists():
-        print(f"Input CSV not found: {input_path}")
-        print("Create train/val/test splits first (split_dataset.py).")
+    if not sjekk_at_fil_finnes(input_sti, "Lag train/val/test-split først."):
         return 0
 
     try:
         import joblib  # type: ignore
-    except Exception:  # noqa: BLE001
-        print("joblib is not available. TODO: install dependencies in your ML environment.")
+    except Exception:
+        print("joblib mangler. Installer avhengigheter i ML-miljøet.")
         return 0
 
     try:
         import pandas as pd  # type: ignore
         from sklearn.metrics import classification_report, confusion_matrix  # type: ignore
-    except Exception as exc:  # noqa: BLE001
-        print("Missing dependencies for evaluation. Install pandas + scikit-learn.")
-        print(f"Import error: {exc}")
+    except Exception as feil:
+        print("Mangler avhengigheter for evaluering. Installer pandas og scikit-learn.")
+        print(f"Importfeil: {feil}")
         return 0
 
-    model = joblib.load(model_path)
-    encoder = joblib.load(enc_path)
-    df = pd.read_csv(input_path)
+    modell = joblib.load(modell_sti)
+    encoder = joblib.load(encoder_sti)
+    data = pd.read_csv(input_sti)
 
-    if args.label_column not in df.columns:
-        raise ValueError(f"Missing label column: {args.label_column!r}")
+    if args.label_column not in data.columns:
+        raise ValueError(f"Mangler label-kolonne: {args.label_column!r}")
 
-    non_feature: Set[str] = {
-        "sample_id",
-        "label_material",
-        "label_object",
-        "sand_type",
-        "lysforhold",
-        "avstand_cm",
-        "position_id",
-        "angle_id",
-        "triad_file",
-        "triad_file_resolved",
-        "diameter_mm",
-        "size_group",
-        "surface_condition",
-        "buried_level",
-        "run_id",
-    }
+    # Rader uten fasit kan ikke brukes til evaluering.
+    data = data.dropna(subset=[args.label_column]).copy()
 
-    df = df.dropna(subset=[args.label_column]).copy()
-    feature_columns: List[str] = []
-    for c in df.columns:
-        if c == args.label_column:
-            continue
-        if c in non_feature:
-            continue
-        if pd.api.types.is_numeric_dtype(df[c]):
-            feature_columns.append(c)
+    feature_kolonner = finn_feature_kolonner(data, args.label_column, pd)
+    if not feature_kolonner:
+        raise ValueError("Fant ingen numeriske feature-kolonner i input CSV.")
 
-    if not feature_columns:
-        raise ValueError("No numeric feature columns found in input CSV.")
+    x_test = data[feature_kolonner].fillna(0.0)
+    y_fasit_tekst = data[args.label_column].astype(str)
 
-    X = df[feature_columns].fillna(0.0)
-    y_true_raw = df[args.label_column].astype(str)
-
-    # Encode labels to match training encoding
+    # LabelEncoder gjør tekst-labels om til tall, slik som under trening.
     try:
-        y_true = encoder.transform(y_true_raw)
-    except Exception:  # noqa: BLE001
-        # Fallback: if encoder doesn't match, evaluate on raw labels where possible
-        y_true = y_true_raw
+        y_fasit = encoder.transform(y_fasit_tekst)
+    except Exception:
+        # Hvis encoder ikke passer, prøver vi likevel å evaluere med rå tekst-labels.
+        y_fasit = y_fasit_tekst
 
-    y_pred = model.predict(X)
+    y_predikert = modell.predict(x_test)
+
     print("Confusion matrix:")
-    cm = confusion_matrix(y_true, y_pred)
+    cm = confusion_matrix(y_fasit, y_predikert)
     print(cm)
     print()
+
     print("Classification report:")
     try:
-        target_names = list(getattr(encoder, "classes_", []))
-        if target_names:
-            print(classification_report(y_true, y_pred, target_names=target_names))
+        klassenavn = list(getattr(encoder, "classes_", []))
+        if klassenavn:
+            print(classification_report(y_fasit, y_predikert, target_names=klassenavn))
         else:
-            print(classification_report(y_true, y_pred))
-    except Exception:  # noqa: BLE001
-        print(classification_report(y_true, y_pred))
-
-    # Optional: save confusion matrix plot
-    try:
-        import matplotlib.pyplot as plt  # type: ignore
-
-        fig = plt.figure(figsize=(6, 6))
-        ax = fig.add_subplot(1, 1, 1)
-        ax.imshow(cm, interpolation="nearest")
-        ax.set_title("Confusion matrix")
-        ax.set_xlabel("Predicted")
-        ax.set_ylabel("True")
-        plt.tight_layout()
-        out = Path(args.cm_out)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(out, dpi=150)
-        plt.close(fig)
-        print(f"Saved confusion matrix PNG: {out}")
+            print(classification_report(y_fasit, y_predikert))
     except Exception:
-        print("matplotlib not available (or failed). Skipping PNG output.")
+        print(classification_report(y_fasit, y_predikert))
 
+    lag_confusion_matrix_bilde(cm, Path(args.cm_out))
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

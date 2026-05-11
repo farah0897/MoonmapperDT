@@ -1,9 +1,13 @@
 """
-Train Random Forest on `ml/datasets/processed/triad_features.csv`.
+Tren Random Forest-modellen på Triad-features.
 
-Writes:
-  ml/models/random_forest.joblib
-  ml/models/label_encoder.joblib
+Dette scriptet er en enkel snarvei til:
+ml/training/train_random_forest.py
+
+Standard:
+- Leser ml/datasets/processed/triad_features.csv
+- Skriver modellen til ml/models/random_forest.joblib
+- Skriver label encoder til ml/models/label_encoder.joblib
 """
 
 from __future__ import annotations
@@ -14,28 +18,47 @@ import sys
 from typing import List, Optional
 
 
+def har_argument(argumenter: List[str], flagg: str) -> bool:
+    """Sjekker om brukeren allerede har sendt inn et flagg."""
+    for argument in argumenter:
+        if argument == flagg:
+            return True
+        if argument.startswith(flagg + "="):
+            return True
+    return False
+
+
+def legg_til_standard_argumenter(argumenter: List[str]) -> List[str]:
+    """Legger til standard input/output for modelltrening."""
+    if not har_argument(argumenter, "--input"):
+        argumenter.extend(["--input", "ml/datasets/processed/triad_features.csv"])
+
+    if not har_argument(argumenter, "--model-output"):
+        argumenter.extend(["--model-output", "ml/models/random_forest.joblib"])
+
+    if not har_argument(argumenter, "--encoder-output"):
+        argumenter.extend(["--encoder-output", "ml/models/label_encoder.joblib"])
+
+    return argumenter
+
+
 def main(argv: Optional[List[str]] = None) -> int:
-    from ml.training.train_random_forest import main as impl_main  # type: ignore
+    from ml.training.train_random_forest import main as ekte_main  # type: ignore
 
     if argv is None:
-        argv = list(sys.argv[1:])
+        argumenter = list(sys.argv[1:])
+    else:
+        argumenter = list(argv)
 
-    def _has(flag: str) -> bool:
-        return any(a == flag or a.startswith(flag + "=") for a in argv)
+    argumenter = legg_til_standard_argumenter(argumenter)
 
-    if not _has("--input"):
-        argv.extend(["--input", "ml/datasets/processed/triad_features.csv"])
-    if not _has("--model-output"):
-        argv.extend(["--model-output", "ml/models/random_forest.joblib"])
-    if not _has("--encoder-output"):
-        argv.extend(["--encoder-output", "ml/models/label_encoder.joblib"])
-
-    old_argv = sys.argv[:]
+    # Vi setter sys.argv midlertidig fordi treningsscriptet bruker argparse selv.
+    gammel_argv = sys.argv[:]
     try:
-        sys.argv = [old_argv[0], *argv]
-        return int(impl_main())
+        sys.argv = [gammel_argv[0]] + argumenter
+        return int(ekte_main())
     finally:
-        sys.argv = old_argv
+        sys.argv = gammel_argv
 
 
 if __name__ == "__main__":

@@ -27,6 +27,12 @@ def main() -> int:
         default="ml/datasets/processed/sam_reference_spectra.json",
         help="SAM class reference spectra JSON (from extract_triad_features).",
     )
+    p.add_argument(
+        "--max-rows",
+        type=int,
+        default=11,
+        help="How many burst rows to use. Default is 11 because the current training data uses 11 rows.",
+    )
     args = p.parse_args()
 
     raw_path = Path(args.raw)
@@ -56,13 +62,25 @@ def main() -> int:
         return 2
 
     burst = read_triad_raw_csv(raw_path)
+    if args.max_rows is not None and args.max_rows > 0 and len(burst) > args.max_rows:
+        # Treningsdataene i dette datasettet har 11 rader per måling.
+        # Derfor kutter vi live-målinger likt, slik at features beregnes på samme måte.
+        print(f"Using first {args.max_rows} rows from {len(burst)} live rows.")
+        burst = burst[: args.max_rows]
     sam_refs = load_sam_reference_spectra(sam_path)
     feats = extract_features_from_burst(burst, sam_refs=sam_refs)
     flat = _flatten_features_for_csv(feats)
 
-    X = pd.DataFrame([flat]).fillna(0.0)
     model = joblib.load(Path(args.model))
     encoder = joblib.load(Path(args.encoder))
+
+    # Random Forest i scikit-learn husker kolonnenavnene fra trening.
+    # Derfor må live-data ha samme kolonner og samme rekkefølge.
+    trenings_kolonner = list(getattr(model, "feature_names_in_", []))
+    if trenings_kolonner:
+        X = pd.DataFrame([flat]).reindex(columns=trenings_kolonner, fill_value=0.0).fillna(0.0)
+    else:
+        X = pd.DataFrame([flat]).fillna(0.0)
 
     probs = getattr(model, "predict_proba", None)
     if callable(probs):
@@ -72,6 +90,9 @@ def main() -> int:
         label = classes[idx] if classes else str(idx)
         conf = float(pvec[idx])
         print(f"prediction={label} confidence={conf:.3f}")
+        if classes:
+            detaljer = ", ".join(f"{classes[i]}={float(pvec[i]):.3f}" for i in range(len(classes)))
+            print(f"probabilities: {detaljer}")
         return 0
 
     pred = model.predict(X)[0]

@@ -20,8 +20,6 @@ install/
 log/
 
 # ML datasets
-ml/datasets/raw/
-ml/datasets/processed/
 
 # Large model artifacts
 ml/models/*.joblib
