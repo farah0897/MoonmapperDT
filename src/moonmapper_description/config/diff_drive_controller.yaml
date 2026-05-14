@@ -4,7 +4,6 @@ diff_drive_controller:
     use_sim_time: true
 
     # TF: odom -> base_footprint (her). URDF: base_footprint -> base_link med z ~0,124 m (hjulplan).
-    # Nav2/RTAB bruker base_link; ventescript og costmaps forventer odom -> base_link.
 
     left_wheel_names:  ["wheel_l1_joint", "wheel_l2_joint", "wheel_l3_joint"]
     right_wheel_names: ["wheel_r1_joint", "wheel_r2_joint", "wheel_r3_joint"]
@@ -35,9 +34,7 @@ diff_drive_controller:
     # moonmapper_bringup konverterer Twist (rover-konvensjon paa /cmd_vel) til
     # TwistStamped paa veien inn til controller-en.
 
-    # Velocity-limiter rover-en til trygg sim-fart. Akselerasjons-rampene gir
-    # MPPI/Nav2 og det passive rocker-bogie-oppsettet tid til a stabilisere seg
-    # (lave verdier her demper "rystingen" i diff-staven og rocker-tap-leddet).
+    # Velocity-limiter for trygg sim-fart. Akselerasjons-rampene demper rykk i rocker-bogie.
     linear.x.has_velocity_limits:  true
     linear.x.max_velocity:  0.25
     linear.x.min_velocity: -0.25

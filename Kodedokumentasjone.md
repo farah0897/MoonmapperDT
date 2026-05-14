@@ -128,7 +128,7 @@ YAML brukes nesten alltid til **parameter-konfig** for ROS 2 noder og stacks:
   - `config/moonmapper_rviz.rviz`
 - `package.xml`
 
-`setup.cfg` styrer hvor “scripts” installeres. `setup.py` definerer `console_scripts` (f.eks. `camera_aliases`, `cmd_vel_odom_relay`, UWB-noder).
+`setup.cfg` styrer hvor “scripts” installeres. `setup.py` definerer `console_scripts` (f.eks. `camera_aliases`, `cmd_vel_odom_relay`).
 
 #### `launch/sim.launch.py` – Webots sim bringup
 

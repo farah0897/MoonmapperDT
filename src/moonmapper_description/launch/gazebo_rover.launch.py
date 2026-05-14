@@ -14,7 +14,7 @@ Typisk bruk:
 
   ros2 launch moonmapper_description gazebo_rover.launch.py world:=...moon_arena.sdf spawn_z:=0.006
 
-  # EKF (robot_localization), hjul-odom som eneste odom-TF-kilde:
+  # EKF (robot_localization), hjul-odom som eneste odom-TF-kilde (yaml i moonmapper_description):
   #   ros2 launch moonmapper_description gazebo_rover.launch.py use_ekf:=true
 
   # Viktig: vertikal høyde heter spawn_z (ikke z_spawn). z_spawn:=... virker som alias.
@@ -75,7 +75,6 @@ def _physics_only_debug(context):
 def _diff_relay_ekf_chain(context, *, load_jsb):
     """diff_drive-spawner (valgfri odom-TF-overlay), relay og valgfri EKF etter load_jsb."""
     desc_share = get_package_share_directory("moonmapper_description")
-    bringup_share = get_package_share_directory("moonmapper_bringup")
     use_ekf = (context.launch_configurations.get("use_ekf") or "false").strip().lower() in (
         "true",
         "1",
@@ -129,15 +128,7 @@ def _diff_relay_ekf_chain(context, *, load_jsb):
         output="screen",
     )
 
-    rocker_limit_watch = Node(
-        package="moonmapper_bringup",
-        executable="rocker_joint_limit_watch",
-        name="rocker_joint_limit_watch",
-        parameters=[{"use_sim_time": use_sim_time}],
-        output="screen",
-    )
-
-    ekf_params_path = os.path.join(bringup_share, "config", "ekf_wheel_odom.yaml")
+    ekf_params_path = os.path.join(desc_share, "config", "ekf_wheel_odom.yaml")
     ekf_pub_raw = (context.launch_configurations.get("ekf_publish_tf") or "true").strip().lower()
     ekf_publish_tf = ekf_pub_raw in ("true", "1", "yes")
     builtin_wheel_ekf = (context.launch_configurations.get("builtin_wheel_ekf") or "true").strip().lower() in (
@@ -146,7 +137,7 @@ def _diff_relay_ekf_chain(context, *, load_jsb):
         "yes",
     )
 
-    on_exit_after_diff = [cmd_vel_odom_relay, rocker_limit_watch]
+    on_exit_after_diff = [cmd_vel_odom_relay]
     if use_ekf and builtin_wheel_ekf:
         ekf_node = Node(
             package="robot_localization",
@@ -236,7 +227,7 @@ def generate_launch_description() -> LaunchDescription:
             "gz_sim_verbosity",
             default_value="2",
             description=(
-                "gz sim -v nivaa (0-4). 3 = meget detaljert (tungt med GUI+RTAB+Nav2); "
+                "gz sim -v nivaa (0-4). 3 = meget detaljert (tungt med GUI og mange sensorbroer); "
                 "2 eller 1 gir mindre logg- og UI-belastning."
             ),
         ),

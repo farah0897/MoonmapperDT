@@ -1,15 +1,13 @@
 # robot_localization EKF — MoonMapper Gazebo, kun hjul-odometri.
-# Aktiveres med use_ekf:=true i gazebo_rover.
+# Aktiveres med use_ekf:=true i gazebo_rover.launch.py
 #
 # TF: URDF har base_footprint -> base_link (statisk). diff_drive_controller
 # bruker base_frame_id=base_footprint. EKF må derfor publisere odom -> base_footprint
 # (ikke direkte odom -> base_link), ellers får base_link to foreldre i TF-treet.
-#
-# Senere: IMU, BU04/trilateration, visual odom — ikke i denne konfigurasjonen.
 
 ekf_filter_node:
   ros__parameters:
-    # 20 Hz gir ~50 ms per syklus — unngar «Failed to meet update rate» nar sim/filter
+    # 20 Hz gir ~50 ms per syklus — unngår «Failed to meet update rate» når sim/filter
     # sporadisk bruker ~40 ms (30 Hz krever <33 ms).
     frequency: 20.0
     sensor_timeout: 0.25
