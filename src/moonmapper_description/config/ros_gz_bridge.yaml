@@ -9,12 +9,26 @@
   gz_type_name: gz.msgs.Clock
   direction: GZ_TO_ROS
 
-# Modell-pose fra gz-sim-pose-publisher-system
-- ros_topic_name: /tf
-  gz_topic_name: /model/moonmapper/pose
-  ros_type_name: tf2_msgs/msg/TFMessage
-  gz_type_name: gz.msgs.Pose_V
+# NB: Ikke bro /model/.../pose til ROS /tf nar ros2_control + EKF/RSP eier robot-TF.
+# Gz PosePublisher + denne broen ga et separat tre (world/moonmapper vs odom/base_link)
+# og RTAB-Map/Nav2 feilet med «Tf has two or more unconnected trees».
+# Ground truth: bruk gz topic direkte, eller reaktiver bro til et annet ROS-topic enn /tf.
+
+# Modellpose (ground truth) til UWB-range-sim — KUN dette ROS-topicet, aldri /tf.
+# Verden heter moon_arena (moon_arena.sdf); modellnavn er moonmapper (gazebo_rover spawn).
+# Ved annet world-navn: legg egen bridge eller overstyr uwb_range_sim_node.
+- ros_topic_name: /gz/moonmapper/pose
+  gz_topic_name: /world/moon_arena/model/moonmapper/pose
+  ros_type_name: geometry_msgs/msg/Pose
+  gz_type_name: gz.msgs.Pose
   direction: GZ_TO_ROS
+
+# (Fjernet) Modell-pose fra gz-sim-pose-publisher-system -> /tf
+# - ros_topic_name: /tf
+#   gz_topic_name: /model/moonmapper/pose
+#   ros_type_name: tf2_msgs/msg/TFMessage
+#   gz_type_name: gz.msgs.Pose_V
+#   direction: GZ_TO_ROS
 
 # cmd_vel gaar vanligvis via diff_drive_controller (ROS 2), men
 # hvis du heller vil drive direkte paa Gazebo's DiffDrive bruker

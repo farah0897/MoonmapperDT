@@ -42,12 +42,6 @@ install(DIRECTORY
   DESTINATION share/${PROJECT_NAME}
 )
 
-install(PROGRAMS
-  launch/rocker_diff_joint.py
-  launch/unity_cmd_vel_node.py
-  DESTINATION lib/${PROJECT_NAME}
-)
-
 ament_environment_hooks(
   "${CMAKE_CURRENT_SOURCE_DIR}/hooks/${PROJECT_NAME}.dsv.in")
 

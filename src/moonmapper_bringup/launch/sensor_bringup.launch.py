@@ -21,9 +21,26 @@ def generate_launch_description() -> LaunchDescription:
     return LaunchDescription([
         DeclareLaunchArgument("world", default_value=default_world),
         DeclareLaunchArgument("use_rviz", default_value="true"),
-        # Roveren er ~5 cm; 0.05 m er et tryggere default-spawn for å unngå "flytende" start.
-        DeclareLaunchArgument("spawn_z", default_value="0.15"),
+        # spawn_z: se DeclareLaunchArgument under (juster mot regolith z=0).
+        DeclareLaunchArgument(
+            "spawn_z",
+            default_value="0.026",
+            description=(
+                "base_footprint spawn-z; med URDF base_link ~0,124 m over footprint tilsvarer ~0,026 m "
+                "tidligere default 0,15 m for samme hjul-høyde."
+            ),
+        ),
         DeclareLaunchArgument("enable_diff_plugin", default_value="true"),
+        DeclareLaunchArgument(
+            "use_ekf",
+            default_value="false",
+            description="Videresendes til gazebo_rover (robot_localization EKF).",
+        ),
+        DeclareLaunchArgument(
+            "ekf_publish_tf",
+            default_value="true",
+            description="Når use_ekf: EKF publish_tf i gazebo_rover.",
+        ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 PathJoinSubstitution([desc_pkg, "launch", "gazebo_rover.launch.py"])
@@ -33,6 +50,8 @@ def generate_launch_description() -> LaunchDescription:
                 "use_rviz": LaunchConfiguration("use_rviz"),
                 "spawn_z": LaunchConfiguration("spawn_z"),
                 "enable_diff_plugin": LaunchConfiguration("enable_diff_plugin"),
+                "use_ekf": LaunchConfiguration("use_ekf"),
+                "ekf_publish_tf": LaunchConfiguration("ekf_publish_tf"),
             }.items(),
         ),
     ])

@@ -1,160 +1,177 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="moonmapper">
-
   <!-- Author joint limits in degrees; URDF consumes radians -->
-  <xacro:property name="deg" value="0.017453292519943295"/> <!-- pi/180 -->
-  <!-- NOTE: Keeping this file argument-free for simple launching. -->
-  <!-- URDF mimic-tagging is intended ONLY for RViz / kinematic visualization.
-       In Gazebo, mimic can fight physics constraints / plugins and stiffen the suspension. -->
+  <xacro:property name="deg" value="0.017453292519943295"/>
+  <!-- pi/180 -->
+  <!-- base_footprint ligger i hjulkontakt-plan (z=0 i footprint). base_link-origo er over: min hjul-senter-z i base_link ≈ −0,0792 m, r=0,045 → bunn ≈ −0,1242 m. -->
+  <xacro:property name="base_link_z_above_footprint" value="0.1242"/>
+  <!-- URDF mimic er for RViz. I Gazebo er mimic ofte av; prisme-ledd uten mimic blir ustabile — bruk use_gazebo:=true for fixed push-rod i sim. -->
   <xacro:arg name="enable_urdf_mimic" default="true"/>
-
-  <!-- Base footprint frame for RViz / navigation stacks -->
-  <link name="base_footprint"/>
+  <xacro:arg name="use_gazebo" default="false"/>
+  <!-- Enkle primitiver for rocker/bogie/hjul i stedet for STL (mindre «krok» mot bakken). -->
+  <xacro:arg name="simple_collision_debug" default="false"/>
+  <xacro:macro name="rocker_stl_collision" params="mesh_file">
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://moonmapper_description/meshes/visual/${mesh_file}" scale="1 1 1"/>
+      </geometry>
+    </collision>
+  </xacro:macro>
+  <xacro:macro name="rocker_primitive_collision">
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.16 0.042 0.042"/>
+      </geometry>
+    </collision>
+  </xacro:macro>
+  <xacro:macro name="bogie_primitive_collision">
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.12 0.052 0.052"/>
+      </geometry>
+    </collision>
+  </xacro:macro>
+  <xacro:macro name="wheel_primitive_collision">
+    <collision>
+      <origin xyz="0 0 0" rpy="1.5707963267948966 0 0"/>
+      <geometry>
+        <!-- Målt: r=0,045 m, bredde 0,039 m (sylinder-akse langs Y i link-frame). -->
+        <cylinder radius="0.045" length="0.039"/>
+      </geometry>
+    </collision>
+  </xacro:macro>
+  <xacro:macro name="diff_bar_primitive_collision">
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.16 0.028 0.028"/>
+      </geometry>
+    </collision>
+  </xacro:macro>
+  <!-- Base footprint: bakkeplan under rover (Nav2/MPPI). Lett rot-node; unngaa null-inertia i Gazebo. -->
+  <link name="base_footprint">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.0001"/>
+      <inertia ixx="1e-12" ixy="0" ixz="0" iyy="1e-12" iyz="0" izz="1e-12"/>
+    </inertial>
+  </link>
   <joint name="base_footprint_to_base_link" type="fixed">
     <parent link="base_footprint"/>
     <child link="base_link"/>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <origin xyz="0 0 ${base_link_z_above_footprint}" rpy="0 0 0"/>
   </joint>
-
   <link name="base_link">
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="package://moonmapper_description/meshes/visual/robot_base.stl"
-              scale="1 1 1"/>
+        <mesh filename="package://moonmapper_description/meshes/visual/robot_base.stl" scale="1 1 1"/>
       </geometry>
       <material name="gray">
         <color rgba="0.8 0.8 0.8 1.0"/>
       </material>
     </visual>
+    <!-- simple_collision_debug: ingen base-bakkekontakt — liten sentrert boks ble «skrapekant» under nesa og ga varig nose-down uavhengig av spawn_z. -->
+    <xacro:unless value="$(arg simple_collision_debug)">
     <collision>
-      <!-- Stabil sim-collision: primitiv boks i stedet for detaljert STL.
-           Hindrer at skarpe detaljer tar bakken og “tipper” roveren før
-           rocker/bogie får jobbe. Størrelse fra notat i filen: 48x25x18mm. -->
-      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <!-- Primitiv boks, forskjøvet +X/+Z: front (kamera) er ca. -X; boks bakover/opp unngar at underkant tar bakken før hjulene finner likevekt. -->
+      <origin xyz="0.020 0 0.011" rpy="0 0 0"/>
       <geometry>
         <box size="0.048 0.025 0.018"/>
       </geometry>
     </collision>
-    <!-- Gazebo krever inertial paa enhver dynamisk link.
-         Verdier skalert for en ~5cm rover-chassis (mesh-boks 48x25x18mm). -->
+    </xacro:unless>
+    <!-- Gazebo krever inertial paa enhver dynamisk link. Målt masse 0,907 kg; treghet homogen boks 0,305×0,105×0,110 m (ixx=(1/12)m(y²+z²) osv.). -->
+    <!-- ADVARSEL: -X er mot FRONT (stereo ~ -0.166 m). Aldri sett base_link inertial x negativ for aa «løfte nesa» — det flytter masse FOROVER. -->
     <inertial>
-      <origin xyz="0 0 -0.005" rpy="0 0 0"/>
-      <mass value="2.0"/>
-      <inertia ixx="0.0010" ixy="0" ixz="0"
-               iyy="0.0012" iyz="0"
-               izz="0.0015"/>
+      <origin xyz="0.038 0 0.010" rpy="0 0 0"/>
+      <mass value="0.907"/>
+      <inertia ixx="0.0017487" ixy="0" ixz="0" iyy="0.0079457" iyz="0" izz="0.0078645"/>
     </inertial>
   </link>
-
-
-  <!-- =====================================================================
-       ROCKER-BOGIE-SUSPENSJON  (mekanisk korrekt hierarki)
-       =====================================================================
-
-       DOF-oversikt:
-         - rocker_right_joint  (revolute, Y)    [eneste rocker-pivot hoeyre]
-         - rocker_left_joint   (revolute, Y)    [eneste rocker-pivot venstre]
-         - bogie_right_joint   (revolute, Y)    [bogie relativt til rocker]
-         - bogie_left_joint    (revolute, Y)    [bogie relativt til rocker]
-         - wheel_[lr][123]_joint (continuous, Y)
-
-       Feste-braketten + mellomstykket + stang er STIV-SVEISET til rockeren
-       (fixed). Dette er fysisk korrekt: push-arm-strukturen på toppen av
-       en rocker har ingen egen frihetsgrad relativt til rockeren.
-
-       Den lukkede sloeyfen mellom stang-tuppen og diff-staven i chassiset
-       lar seg IKKE representere i URDF (trestruktur). Vi løser det ved:
-         * RViz: mimic-tagger på rocker_left_joint og rocker_bogie_diff_joint
-         * Gazebo: RockerBogieDifferential-pluginen (PD-constraint)
-       ===================================================================== -->
-
-  <!-- =====================================================================
-       HOEYRE SIDE
-       ===================================================================== -->
-
-  <!-- Rocker (revolute) festet direkte på chassiset.
-       Origin = gammel "feste_rocker_bogie" fixed-offset + gammel rocker-offset:
-         (0.014227,-0.065999,0.021756) + (-0.013717,-0.001277,-0.007986)
-         = (0.000510,-0.067276,0.013770) -->
+  <!-- ===================================================================== ROCKER-BOGIE-SUSPENSJON (mekanisk korrekt hierarki) ===================================================================== DOF-oversikt: - rocker_right_joint (revolute, Y) [eneste rocker-pivot hoeyre] - rocker_left_joint (revolute, Y) [eneste rocker-pivot venstre] - bogie_right_joint (revolute, Y) [bogie relativt til rocker] - bogie_left_joint (revolute, Y) [bogie relativt til rocker] - wheel_[lr][123]_joint (continuous, Y) Feste-braketten + mellomstykket + stang er STIV-SVEISET til rockeren (fixed). Dette er fysisk korrekt: push-arm-strukturen på toppen av en rocker har ingen egen frihetsgrad relativt til rockeren. Den lukkede sloeyfen mellom stang-tuppen og diff-staven i chassiset lar seg IKKE representere i URDF (trestruktur). Vi løser det ved: * RViz: prisme-ledd + mimic (enable_urdf_mimic) for visuell/TF-konsistens * Gazebo (use_gazebo): push-stag festet stiff til base (stabilt tre) * Gazebo Sim: system-plugin moonmapper_rocker_bogie_differential (Walking-beam PD + diff-stav PD) — se moonmapper_rover_gazebo.urdf.xacro ===================================================================== -->
+  <!-- ===================================================================== HOEYRE SIDE ===================================================================== -->
+  <!-- Rocker (revolute) festet direkte på chassiset. Origin = gammel "feste_rocker_bogie" fixed-offset + gammel rocker-offset: (0.014227,-0.065999,0.021756) + (-0.013717,-0.001277,-0.007986) = (0.000510,-0.067276,0.013770) -->
   <link name="rocker_right_link">
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="package://moonmapper_description/meshes/visual/rocker_right_link.stl"
-              scale="1 1 1"/>
+        <mesh filename="package://moonmapper_description/meshes/visual/rocker_right_link.stl" scale="1 1 1"/>
       </geometry>
       <material name="dark_gray">
         <color rgba="0.3 0.3 0.3 1.0"/>
       </material>
     </visual>
-    <collision>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry>
-        <mesh filename="package://moonmapper_description/meshes/visual/rocker_right_link.stl"
-              scale="1 1 1"/>
-      </geometry>
-    </collision>
+    <xacro:if value="$(arg simple_collision_debug)">
+      <xacro:rocker_primitive_collision/>
+    </xacro:if>
+    <xacro:unless value="$(arg simple_collision_debug)">
+      <xacro:rocker_stl_collision mesh_file="rocker_right_link.stl"/>
+    </xacro:unless>
     <inertial>
-      <!-- Thin rod om pivot: I=mL^2/3, L=0.16m, m=0.08 -> 6.8e-4.
-           Konservativ 4e-4 for aa unngaa integrator-eksplosjoner. -->
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <mass value="0.08"/>
-      <inertia ixx="2.0e-5" ixy="0" ixz="0"
-               iyy="4.0e-4" iyz="0"
-               izz="4.0e-4"/>
+      <!-- Målt 0,166 kg/stk; treghet estimert som homogen boks = rocker_primitive_collision (0,16×0,042×0,042 m). -->
+      <!-- Hjul l1 ligger ca. -0.16 m i X fra pivot; uten offset blir rocker for «tung» foran. Liten +X flytter rapportert CoM mot bogie (+X = bak langs armen). -->
+      <origin xyz="0.030 0 -0.028" rpy="0 0 0"/>
+      <mass value="0.166"/>
+      <inertia ixx="0.0000488" ixy="0" ixz="0" iyy="0.0003785" iyz="0" izz="0.0003785"/>
     </inertial>
   </link>
   <joint name="rocker_right_joint" type="revolute">
     <parent link="base_link"/>
     <child link="rocker_right_link"/>
+    <!-- Y: opprinnelig CAD/URDF (git). -->
     <origin xyz="0.014227 -0.065999 0.021756" rpy="0 0 0"/>
     <axis xyz="0 1 0"/>
-    <dynamics damping="0.02" friction="0.005"/>
-    <limit lower="-0.133" upper="0.133" effort="100" velocity="6.0"/>
+    <!-- Moderate URDF-demping + Gazebo-kontakt; unngaa for hoey friksjon som låser rocker-bogie. -->
+    <dynamics damping="0.10" friction="0.02"/>
+    <limit lower="${-35*deg}" upper="${35*deg}" effort="20" velocity="6.0"/>
   </joint>
-
-
   <!-- Mellomstykket er sveiset fast i toppen av braketten. -->
   <link name="feste_mellom_feste_og_stang_right_link">
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="package://moonmapper_description/meshes/visual/feste_mellom_feste_og_stang_right_link.stl"
-              scale="1 1 1"/>
+        <mesh filename="package://moonmapper_description/meshes/visual/feste_mellom_feste_og_stang_right_link.stl" scale="1 1 1"/>
       </geometry>
       <material name="moonmapper_dark_gray">
         <color rgba="0.35 0.35 0.35 1.0"/>
       </material>
     </visual>
+    <!-- Målt bracket ~3 g; treghet grovt for liten boks (numerikk). -->
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>
-      <mass value="0.005"/>
-      <inertia ixx="1e-8" ixy="0" ixz="0"
-               iyy="1e-8" iyz="0"
-               izz="1e-8"/>
+      <mass value="0.003"/>
+      <inertia ixx="2e-8" ixy="0" ixz="0" iyy="2e-8" iyz="0" izz="2e-8"/>
     </inertial>
   </link>
-  <joint name="feste_mellom_feste_og_stang_right_joint" type="prismatic">
-    <parent link="base_link"/>
-    <child link="feste_mellom_feste_og_stang_right_link"/>
-    <origin xyz="0.013913 -0.067245 0.076373" rpy="0 0 0"/>
-    <axis xyz="1 0 0"/>
-    <xacro:if value="$(arg enable_urdf_mimic)">
-      <mimic joint="rocker_bogie_diff_joint" multiplier="0.05" offset="0.0"/>
-    </xacro:if>
-     <limit lower="${-1*deg}" upper="${1*deg}" effort="50" velocity="3.0"/>
-  </joint>
-
-  <!-- Staget er sveiset fast i mellomstykket. Tupp-enden som fysisk skal
-       kobles til rocker_bogie_diff_link holdes kun visuelt i naerheten;
-       URDF-treet bryter sloeyfen her. -->
+  <xacro:unless value="$(arg use_gazebo)">
+    <joint name="feste_mellom_feste_og_stang_right_joint" type="prismatic">
+      <parent link="base_link"/>
+      <child link="feste_mellom_feste_og_stang_right_link"/>
+      <origin xyz="0.013913 -0.067245 0.076373" rpy="0 0 0"/>
+      <axis xyz="1 0 0"/>
+      <xacro:if value="$(arg enable_urdf_mimic)">
+        <mimic joint="rocker_bogie_diff_joint" multiplier="0.05" offset="0.0"/>
+      </xacro:if>
+      <limit lower="${-1*deg}" upper="${1*deg}" effort="50" velocity="3.0"/>
+    </joint>
+  </xacro:unless>
+  <xacro:if value="$(arg use_gazebo)">
+    <joint name="feste_mellom_feste_og_stang_right_joint" type="fixed">
+      <parent link="base_link"/>
+      <child link="feste_mellom_feste_og_stang_right_link"/>
+      <origin xyz="0.013913 -0.067245 0.076373" rpy="0 0 0"/>
+    </joint>
+  </xacro:if>
+  <!-- Staget er sveiset fast i mellomstykket. Tupp-enden som fysisk skal kobles til rocker_bogie_diff_link holdes kun visuelt i naerheten; URDF-treet bryter sloeyfen her. -->
   <link name="stang_right_link">
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="package://moonmapper_description/meshes/visual/stang_right_link.stl"
-              scale="1 1 1"/>
+        <mesh filename="package://moonmapper_description/meshes/visual/stang_right_link.stl" scale="1 1 1"/>
       </geometry>
       <material name="moonmapper_dark_gray">
         <color rgba="0.35 0.35 0.35 1.0"/>
@@ -163,376 +180,286 @@
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <mass value="0.005"/>
-      <inertia ixx="1e-8" ixy="0" ixz="0"
-               iyy="1e-8" iyz="0"
-               izz="1e-8"/>
+      <inertia ixx="1e-8" ixy="0" ixz="0" iyy="1e-8" iyz="0" izz="1e-8"/>
     </inertial>
   </link>
-  <joint name="stang_right_joint" type="prismatic">
-    <parent link="feste_mellom_feste_og_stang_right_link"/>
-    <child link="stang_right_link"/>
-    <origin xyz="-0.101730 -0.000140 0.000033" rpy="0 0 0"/>
-    <axis xyz="1 0 0"/>
-    <xacro:if value="$(arg enable_urdf_mimic)">
-      <mimic joint="feste_mellom_feste_og_stang_right_joint" multiplier="0.05" offset="0.0"/>
-    </xacro:if>
-    <limit lower="${-1*deg}" upper="${1*deg}" effort="50" velocity="3.0"/>
-  </joint>
-
-  <!-- Bogie (revolute, Y) parentet paa ROCKEREN, ikke paa braketten.
-       Origin = (gammel bogie-in-feste-frame) - (gammel rocker-in-feste-frame)
-         = (0.013841,-0.001255,-0.008003) - (-0.013717,-0.001277,-0.007986)
-         = (0.027558, 0.000022, -0.000017) -->
-  <link name="bogie_right_link">
+  <xacro:unless value="$(arg use_gazebo)">
+    <joint name="stang_right_joint" type="prismatic">
+      <parent link="feste_mellom_feste_og_stang_right_link"/>
+      <child link="stang_right_link"/>
+      <origin xyz="-0.101730 -0.000140 0.000033" rpy="0 0 0"/>
+      <axis xyz="1 0 0"/>
+      <xacro:if value="$(arg enable_urdf_mimic)">
+        <mimic joint="feste_mellom_feste_og_stang_right_joint" multiplier="0.05" offset="0.0"/>
+      </xacro:if>
+      <limit lower="${-1*deg}" upper="${1*deg}" effort="50" velocity="3.0"/>
+    </joint>
+  </xacro:unless>
+  <xacro:if value="$(arg use_gazebo)">
+    <joint name="stang_right_joint" type="fixed">
+      <parent link="feste_mellom_feste_og_stang_right_link"/>
+      <child link="stang_right_link"/>
+      <origin xyz="-0.101730 -0.000140 0.000033" rpy="0 0 0"/>
+    </joint>
+  </xacro:if>
+  <link name="feste_mellom_feste_og_stang_left_link">
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="package://moonmapper_description/meshes/visual/bogie_right_link.stl"
-              scale="1 1 1"/>
+        <mesh filename="package://moonmapper_description/meshes/visual/feste_mellom_feste_og_stang_left_link.stl" scale="1 1 1"/>
       </geometry>
       <material name="moonmapper_dark_gray">
         <color rgba="0.35 0.35 0.35 1.0"/>
       </material>
     </visual>
-    <collision>
+    <!-- Målt bracket ~3 g; treghet grovt for liten boks (numerikk). -->
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.003"/>
+      <inertia ixx="2e-8" ixy="0" ixz="0" iyy="2e-8" iyz="0" izz="2e-8"/>
+    </inertial>
+  </link>
+  <xacro:unless value="$(arg use_gazebo)">
+    <joint name="feste_mellom_feste_og_stang_left_joint" type="prismatic">
+      <parent link="base_link"/>
+      <child link="feste_mellom_feste_og_stang_left_link"/>
+      <origin xyz="0.013977 0.064006 0.076371" rpy="0 0 0"/>
+      <xacro:if value="$(arg enable_urdf_mimic)">
+        <mimic joint="rocker_bogie_diff_joint" multiplier="0.05" offset="0.0"/>
+      </xacro:if>
+      <axis xyz="-1 0 0"/>
+      <limit lower="${-1*deg}" upper="${1*deg}" effort="50" velocity="3.0"/>
+    </joint>
+  </xacro:unless>
+  <xacro:if value="$(arg use_gazebo)">
+    <joint name="feste_mellom_feste_og_stang_left_joint" type="fixed">
+      <parent link="base_link"/>
+      <child link="feste_mellom_feste_og_stang_left_link"/>
+      <origin xyz="0.013977 0.064006 0.076371" rpy="0 0 0"/>
+    </joint>
+  </xacro:if>
+  <link name="stang_left_link">
+    <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="package://moonmapper_description/meshes/visual/bogie_right_link.stl"
-              scale="1 1 1"/>
+        <mesh filename="package://moonmapper_description/meshes/visual/stang_left_link.stl" scale="1 1 1"/>
       </geometry>
-    </collision>
+      <material name="moonmapper_dark_gray">
+        <color rgba="0.35 0.35 0.35 1.0"/>
+      </material>
+    </visual>
     <inertial>
-      <!-- Thin rod om pivot: L=0.30m, m=0.05 -> I=m*L^2/12 = 3.75e-4.
-           Vi bruker 1.5e-4 som kompromiss (stabil + rask response). -->
       <origin xyz="0 0 0" rpy="0 0 0"/>
-      <mass value="0.05"/>
-      <inertia ixx="1.2e-5" ixy="0" ixz="0"
-               iyy="1.5e-4" iyz="0"
-               izz="1.5e-4"/>
+      <mass value="0.005"/>
+      <inertia ixx="1e-8" ixy="0" ixz="0" iyy="1e-8" iyz="0" izz="1e-8"/>
+    </inertial>
+  </link>
+  <xacro:unless value="$(arg use_gazebo)">
+
+    <joint name="stang_left_joint" type="prismatic">
+      <parent link="feste_mellom_feste_og_stang_left_link"/>
+      <child link="stang_left_link"/>
+      <origin xyz="-0.101903 0.001198 0.000110" rpy="0 0 0"/>
+      <axis xyz="1 0 0"/>
+      <xacro:if value="$(arg enable_urdf_mimic)">
+        <mimic joint="feste_mellom_feste_og_stang_left_joint" multiplier="0.05" offset="0.0"/>
+      </xacro:if>
+      <limit lower="${-1*deg}" upper="${1*deg}" effort="50" velocity="3.0"/>
+    </joint>
+  </xacro:unless>
+  <xacro:if value="$(arg use_gazebo)">
+    <joint name="stang_left_joint" type="fixed">
+      <parent link="feste_mellom_feste_og_stang_left_link"/>
+      <child link="stang_left_link"/>
+      <origin xyz="-0.101903 0.001198 0.000110" rpy="0 0 0"/>
+    </joint>
+  </xacro:if>
+  <!-- Bogie (revolute, Y) parentet paa ROCKEREN, ikke paa braketten. Origin = (gammel bogie-in-feste-frame) - (gammel rocker-in-feste-frame) = (0.013841,-0.001255,-0.008003) - (-0.013717,-0.001277,-0.007986) = (0.027558, 0.000022, -0.000017) -->
+  <link name="bogie_right_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://moonmapper_description/meshes/visual/bogie_right_link.stl" scale="1 1 1"/>
+      </geometry>
+      <material name="moonmapper_dark_gray">
+        <color rgba="0.35 0.35 0.35 1.0"/>
+      </material>
+    </visual>
+    <xacro:if value="$(arg simple_collision_debug)">
+      <xacro:bogie_primitive_collision/>
+    </xacro:if>
+    <xacro:unless value="$(arg simple_collision_debug)">
+      <xacro:rocker_stl_collision mesh_file="bogie_right_link.stl"/>
+    </xacro:unless>
+    <inertial>
+      <!-- Målt 0,112 kg/stk; treghet homogen boks = bogie_primitive_collision (0,12×0,052×0,052 m). -->
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.112"/>
+      <inertia ixx="0.0000505" ixy="0" ixz="0" iyy="0.0001596" iyz="0" izz="0.0001596"/>
     </inertial>
   </link>
   <joint name="bogie_right_joint" type="revolute">
     <parent link="rocker_right_link"/>
     <child link="bogie_right_link"/>
+    <!-- Origin = (gammel bogie-in-feste-frame) - (gammel rocker-in-feste-frame). -->
     <origin xyz="0.087545 -0.025322 -0.050495" rpy="0 0 0"/>
     <axis xyz="0 1 0"/>
-    <dynamics damping="0.01" friction="0.003"/>
-    <limit lower="${-40*deg}" upper="${40*deg}" effort="100" velocity="6.0"/>
+    <dynamics damping="0.08" friction="0.015"/>
+    <limit lower="${-45*deg}" upper="${45*deg}" effort="20" velocity="6.0"/>
   </joint>
-
   <!-- Hoeyre hjul: r1 paa rocker, r2+r3 paa bogie. Continuous (ingen limits). -->
   <link name="wheel_r1_link">
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="package://moonmapper_description/meshes/visual/wheel_r1_link.stl"
-              scale="1 1 1"/>
+        <mesh filename="package://moonmapper_description/meshes/visual/wheel_r1_link.stl" scale="1 1 1"/>
       </geometry>
       <material name="moonmapper_dark_gray">
         <color rgba="0.35 0.35 0.35 1.0"/>
       </material>
     </visual>
-
-    <collision>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry>
-        <mesh filename="package://moonmapper_description/meshes/visual/wheel_r1_link.stl"
-              scale="1 1 1"/>
-      </geometry>
-    </collision>
+    <xacro:if value="$(arg simple_collision_debug)">
+      <xacro:wheel_primitive_collision/>
+    </xacro:if>
+    <xacro:unless value="$(arg simple_collision_debug)">
+      <xacro:rocker_stl_collision mesh_file="wheel_r1_link.stl"/>
+    </xacro:unless>
     <inertial>
+      <!-- Hjul 0,048 kg + tidl. motor 0,062 kg slatt inn i hjullink (ingen motor_*); sylinder om Y, r=0,045, w=0,039, m=0,11. -->
       <origin xyz="0 0 0" rpy="0 0 0"/>
-      <mass value="0.02"/>
-      <inertia ixx="6e-7" ixy="0" ixz="0"
-               iyy="6e-7" iyz="0"
-               izz="1e-6"/>
+      <mass value="0.110"/>
+      <inertia ixx="0.0000697" ixy="0" ixz="0" iyy="0.0001114" iyz="0" izz="0.0000697"/>
     </inertial>
   </link>
   <joint name="wheel_r1_joint" type="continuous">
     <parent link="rocker_right_link"/>
     <child link="wheel_r1_link"/>
-    <origin xyz="-0.157986 -0.023379 -0.091195" rpy="0 0 0"/>
+    <origin xyz="-0.170916 -0.039688 -0.099612" rpy="0 0 0"/>
     <axis xyz="0 1 0"/>
-    <dynamics damping="0.005" friction="0.002"/>
-    <limit effort="0.5" velocity="30.0"/>
+    <dynamics damping="0.01" friction="0.0"/>
+    <limit effort="60.0" velocity="40.0"/>
   </joint>
-
-  <!-- Motor for wheel_r1 -->
-  <link name="motor_r1_link">
-    <visual>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry>
-        <mesh filename="package://moonmapper_description/meshes/visual/motor_r1_link.stl"
-              scale="1 1 1"/>
-      </geometry>
-      <material name="moonmapper_dark_gray">
-        <color rgba="0.35 0.35 0.35 1.0"/>
-      </material>
-    </visual>
-    <inertial>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <mass value="0.001"/>
-      <inertia ixx="1e-8" ixy="0" ixz="0" iyy="1e-8" iyz="0" izz="1e-8"/>
-    </inertial>
-  </link>
-  <joint name="motor_r1_joint" type="fixed">
-    <parent link="wheel_r1_link"/>
-    <child link="motor_r1_link"/>
-    <origin xyz="0.005889 0.016158 0.003605" rpy="0 0 0"/>
-  </joint>
-
   <link name="wheel_r2_link">
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="package://moonmapper_description/meshes/visual/wheel_r2_link.stl"
-              scale="1 1 1"/>
+        <mesh filename="package://moonmapper_description/meshes/visual/wheel_r2_link.stl" scale="1 1 1"/>
       </geometry>
       <material name="moonmapper_dark_gray">
         <color rgba="0.35 0.35 0.35 1.0"/>
       </material>
     </visual>
-    <collision>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry>
-        <mesh filename="package://moonmapper_description/meshes/visual/wheel_r2_link.stl"
-              scale="1 1 1"/>
-      </geometry>
-    </collision>
+    <xacro:if value="$(arg simple_collision_debug)">
+      <xacro:wheel_primitive_collision/>
+    </xacro:if>
+    <xacro:unless value="$(arg simple_collision_debug)">
+      <xacro:rocker_stl_collision mesh_file="wheel_r2_link.stl"/>
+    </xacro:unless>
     <inertial>
+      <!-- Hjul 0,048 kg + tidl. motor 0,062 kg slatt inn i hjullink (ingen motor_*); sylinder om Y, r=0,045, w=0,039, m=0,11. -->
       <origin xyz="0 0 0" rpy="0 0 0"/>
-      <mass value="0.02"/>
-      <inertia ixx="6e-7" ixy="0" ixz="0"
-               iyy="6e-7" iyz="0"
-               izz="1e-6"/>
+      <mass value="0.110"/>
+      <inertia ixx="0.0000697" ixy="0" ixz="0" iyy="0.0001114" iyz="0" izz="0.0000697"/>
     </inertial>
   </link>
   <joint name="wheel_r2_joint" type="continuous">
     <parent link="bogie_right_link"/>
     <child link="wheel_r2_link"/>
-    <origin xyz="-0.087682 -0.001314 -0.050479" rpy="0 0 0"/>
+    <origin xyz="-0.088585 -0.022644 -0.050672" rpy="0 0 0"/>
     <axis xyz="0 1 0"/>
-    <dynamics damping="0.005" friction="0.002"/>
-    <limit effort="0.5" velocity="30.0"/>
+    <dynamics damping="0.01" friction="0.0"/>
+    <limit effort="60.0" velocity="40.0"/>
   </joint>
-
-  <!-- Motor for wheel_r2 -->
-  <link name="motor_r2_link">
-    <visual>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry>
-        <mesh filename="package://moonmapper_description/meshes/visual/motor_r2_link.stl"
-              scale="1 1 1"/>
-      </geometry>
-      <material name="moonmapper_dark_gray">
-        <color rgba="0.35 0.35 0.35 1.0"/>
-      </material>
-    </visual>
-    <inertial>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <mass value="0.001"/>
-      <inertia ixx="1e-8" ixy="0" ixz="0" iyy="1e-8" iyz="0" izz="1e-8"/>
-    </inertial>
-  </link>
-  <joint name="motor_r2_joint" type="fixed">
-    <parent link="wheel_r2_link"/>
-    <child link="motor_r2_link"/>
-    <origin xyz="0.007126 0.015908 0.004629" rpy="0 0 0"/>
-  </joint>
-
   <link name="wheel_r3_link">
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="package://moonmapper_description/meshes/visual/wheel_r3_link.stl"
-              scale="1 1 1"/>
+        <mesh filename="package://moonmapper_description/meshes/visual/wheel_r3_link.stl" scale="1 1 1"/>
       </geometry>
       <material name="moonmapper_dark_gray">
         <color rgba="0.35 0.35 0.35 1.0"/>
       </material>
     </visual>
-    <collision>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry>
-        <mesh filename="package://moonmapper_description/meshes/visual/wheel_r3_link.stl"
-              scale="1 1 1"/>
-      </geometry>
-    </collision>
+    <xacro:if value="$(arg simple_collision_debug)">
+      <xacro:wheel_primitive_collision/>
+    </xacro:if>
+    <xacro:unless value="$(arg simple_collision_debug)">
+      <xacro:rocker_stl_collision mesh_file="wheel_r3_link.stl"/>
+    </xacro:unless>
     <inertial>
+      <!-- Hjul 0,048 kg + tidl. motor 0,062 kg slatt inn i hjullink (ingen motor_*); sylinder om Y, r=0,045, w=0,039, m=0,11. -->
       <origin xyz="0 0 0" rpy="0 0 0"/>
-      <mass value="0.02"/>
-      <inertia ixx="6e-7" ixy="0" ixz="0"
-               iyy="6e-7" iyz="0"
-               izz="1e-6"/>
+      <mass value="0.110"/>
+      <inertia ixx="0.0000697" ixy="0" ixz="0" iyy="0.0001114" iyz="0" izz="0.0000697"/>
     </inertial>
   </link>
   <joint name="wheel_r3_joint" type="continuous">
     <parent link="bogie_right_link"/>
     <child link="wheel_r3_link"/>
-    <origin xyz="0.083643 -0.001174 -0.048394" rpy="0 0 0"/>
+    <origin xyz="0.081571 -0.016915 -0.048426" rpy="0 0 0"/>
     <axis xyz="0 1 0"/>
-    <dynamics damping="0.005" friction="0.002"/>
-    <limit effort="0.5" velocity="30.0"/>
+    <dynamics damping="0.01" friction="0.0"/>
+    <limit effort="60.0" velocity="40.0"/>
   </joint>
-
-  <!-- Motor for wheel_r3 -->
-  <link name="motor_r3_link">
-    <visual>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry>
-        <mesh filename="package://moonmapper_description/meshes/visual/motor_r3_link.stl"
-              scale="1 1 1"/>
-      </geometry>
-      <material name="moonmapper_dark_gray">
-        <color rgba="0.35 0.35 0.35 1.0"/>
-      </material>
-    </visual>
-    <inertial>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <mass value="0.001"/>
-      <inertia ixx="1e-8" ixy="0" ixz="0" iyy="1e-8" iyz="0" izz="1e-8"/>
-    </inertial>
-  </link>
-  <joint name="motor_r3_joint" type="fixed">
-    <parent link="wheel_r3_link"/>
-    <child link="motor_r3_link"/>
-    <origin xyz="-0.007557 0.015899 0.003831" rpy="0 0 0"/>
-  </joint>
-
-  <!-- =====================================================================
-       VENSTRE SIDE (speilbilde av hoeyre)
-       ===================================================================== -->
-
-  <!-- Rocker venstre. Origin = (0.014252,0.064048,0.021830)+(-0.013851,0.001264,-0.007984)
-         = (0.000401, 0.065312, 0.013846).
-       I RViz mimikkes qL = -qR slik at walking-beam-visualiseringen stemmer.
-       I Gazebo er mimic skrudd AV; RockerBogieDifferential-pluginen enforcer
-       sum-constrainten dynamisk i stedet. -->
+  <!-- ===================================================================== VENSTRE SIDE (speilbilde av hoeyre) ===================================================================== -->
+  <!-- Rocker venstre. Origin = (0.014252,0.064048,0.021830)+(-0.013851,0.001264,-0.007984) = (0.000401, 0.065312, 0.013846). I RViz mimikkes qL = -qR slik at walking-beam-visualiseringen stemmer. I Gazebo er mimic skrudd AV; lukket sloeyfe er ikke modellert i fysikken. -->
   <link name="rocker_left_link">
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="package://moonmapper_description/meshes/visual/rocker_left_link.stl"
-              scale="1 1 1"/>
+        <mesh filename="package://moonmapper_description/meshes/visual/rocker_left_link.stl" scale="1 1 1"/>
       </geometry>
       <material name="moonmapper_dark_gray">
         <color rgba="0.35 0.35 0.35 1.0"/>
       </material>
     </visual>
-    <collision>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry>
-        <mesh filename="package://moonmapper_description/meshes/visual/rocker_left_link.stl"
-              scale="1 1 1"/>
-      </geometry>
-    </collision>
+    <xacro:if value="$(arg simple_collision_debug)">
+      <xacro:rocker_primitive_collision/>
+    </xacro:if>
+    <xacro:unless value="$(arg simple_collision_debug)">
+      <xacro:rocker_stl_collision mesh_file="rocker_left_link.stl"/>
+    </xacro:unless>
+    <!-- Samme masse/treghet som rocker_right (speilet mekanikk). -->
     <inertial>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <mass value="0.08"/>
-      <inertia ixx="2.0e-5" ixy="0" ixz="0"
-               iyy="4.0e-4" iyz="0"
-               izz="4.0e-4"/>
+      <origin xyz="0.030 0 -0.028" rpy="0 0 0"/>
+      <mass value="0.166"/>
+      <inertia ixx="0.0000488" ixy="0" ixz="0" iyy="0.0003785" iyz="0" izz="0.0003785"/>
     </inertial>
   </link>
   <joint name="rocker_left_joint" type="revolute">
     <parent link="base_link"/>
     <child link="rocker_left_link"/>
+    <!-- Opprinnelig URDF (git). -->
     <origin xyz="0.014252 0.064048 0.021830" rpy="0 0 0"/>
     <axis xyz="0 1 0"/>
-    <dynamics damping="0.02" friction="0.005"/>
-    <limit lower="-0.133" upper="0.133" effort="100" velocity="6.0"/>
+    <dynamics damping="0.10" friction="0.02"/>
+    <limit lower="${-35*deg}" upper="${35*deg}" effort="20" velocity="6.0"/>
     <xacro:if value="$(arg enable_urdf_mimic)">
       <mimic joint="rocker_right_joint" multiplier="-1.0" offset="0.0"/>
     </xacro:if>
   </joint>
-
-
-  <link name="feste_mellom_feste_og_stang_left_link">
-    <visual>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry>
-        <mesh filename="package://moonmapper_description/meshes/visual/feste_mellom_feste_og_stang_left_link.stl"
-              scale="1 1 1"/>
-      </geometry>
-      <material name="moonmapper_dark_gray">
-        <color rgba="0.35 0.35 0.35 1.0"/>
-      </material>
-    </visual>
-    <inertial>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <mass value="0.005"/>
-      <inertia ixx="1e-8" ixy="0" ixz="0"
-               iyy="1e-8" iyz="0"
-               izz="1e-8"/>
-    </inertial>
-  </link>
-  <joint name="feste_mellom_feste_og_stang_left_joint" type="prismatic">
-    <parent link="base_link"/>
-    <child link="feste_mellom_feste_og_stang_left_link"/>
-    <origin xyz="0.013977 0.064006 0.076371" rpy="0 0 0"/>
-    <xacro:if value="$(arg enable_urdf_mimic)">
-      <mimic joint="rocker_bogie_diff_joint" multiplier="0.05" offset="0.0"/>
-    </xacro:if>
-    <axis xyz="1 0 0"/>
-    <limit lower="${-1*deg}" upper="${1*deg}" effort="50" velocity="3.0"/>
-  </joint>
-
-  <link name="stang_left_link">
-    <visual>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry>
-        <mesh filename="package://moonmapper_description/meshes/visual/stang_left_link.stl"
-              scale="1 1 1"/>
-      </geometry>
-      <material name="moonmapper_dark_gray">
-        <color rgba="0.35 0.35 0.35 1.0"/>
-      </material>
-    </visual>
-    <inertial>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <mass value="0.005"/>
-      <inertia ixx="1e-8" ixy="0" ixz="0"
-               iyy="1e-8" iyz="0"
-               izz="1e-8"/>
-    </inertial>
-  </link>
-  <joint name="stang_left_joint" type="prismatic">
-    <parent link="feste_mellom_feste_og_stang_left_link"/>
-    <child link="stang_left_link"/>
-    <origin xyz="-0.101903 0.001198 0.000110" rpy="0 0 0"/>
-    <axis xyz="1 0 0"/>
-    <xacro:if value="$(arg enable_urdf_mimic)">
-      <mimic joint="feste_mellom_feste_og_stang_left_joint" multiplier="0.05" offset="0.0"/>
-    </xacro:if>
-    <limit lower="${-1*deg}" upper="${1*deg}" effort="50" velocity="3.0"/>
-  </joint>
-
-  <!-- Bogie venstre. Origin = (0.013707,0.001287,-0.008001)-(-0.013851,0.001264,-0.007984)
-         = (0.027558, 0.000023, -0.000017) -->
+  <!-- Bogie venstre. Origin = (0.013707,0.001287,-0.008001)-(-0.013851,0.001264,-0.007984) = (0.027558, 0.000023, -0.000017) -->
   <link name="bogie_left_link">
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="package://moonmapper_description/meshes/visual/bogie_left_link.stl"
-              scale="1 1 1"/>
+        <mesh filename="package://moonmapper_description/meshes/visual/bogie_left_link.stl" scale="1 1 1"/>
       </geometry>
       <material name="moonmapper_dark_gray">
         <color rgba="0.35 0.35 0.35 1.0"/>
       </material>
     </visual>
-    <collision>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry>
-        <mesh filename="package://moonmapper_description/meshes/visual/bogie_left_link.stl"
-              scale="1 1 1"/>
-      </geometry>
-    </collision>
+    <xacro:if value="$(arg simple_collision_debug)">
+      <xacro:bogie_primitive_collision/>
+    </xacro:if>
+    <xacro:unless value="$(arg simple_collision_debug)">
+      <xacro:rocker_stl_collision mesh_file="bogie_left_link.stl"/>
+    </xacro:unless>
     <inertial>
+      <!-- Målt 0,112 kg/stk; treghet homogen boks = bogie_primitive_collision (0,12×0,052×0,052 m). -->
       <origin xyz="0 0 0" rpy="0 0 0"/>
-      <mass value="0.05"/>
-      <inertia ixx="1.2e-5" ixy="0" ixz="0"
-               iyy="1.5e-4" iyz="0"
-               izz="1.5e-4"/>
+      <mass value="0.112"/>
+      <inertia ixx="0.0000505" ixy="0" ixz="0" iyy="0.0001596" iyz="0" izz="0.0001596"/>
     </inertial>
   </link>
   <joint name="bogie_left_joint" type="revolute">
@@ -540,195 +467,105 @@
     <child link="bogie_left_link"/>
     <origin xyz="0.087063 0.025935 -0.050644" rpy="0 0 0"/>
     <axis xyz="0 1 0"/>
-    <dynamics damping="0.01" friction="0.003"/>
-    <limit lower="${-40*deg}" upper="${40*deg}" effort="100" velocity="6.0"/>
+    <dynamics damping="0.08" friction="0.015"/>
+    <limit lower="${-45*deg}" upper="${45*deg}" effort="20" velocity="6.0"/>
   </joint>
-
   <!-- Venstre hjul: l1 paa rocker, l2+l3 paa bogie. Continuous (ingen limits). -->
   <link name="wheel_l1_link">
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="package://moonmapper_description/meshes/visual/wheel_l1_link.stl"
-              scale="1 1 1"/>
+        <mesh filename="package://moonmapper_description/meshes/visual/wheel_l1_link.stl" scale="1 1 1"/>
       </geometry>
       <material name="moonmapper_dark_gray">
         <color rgba="0.35 0.35 0.35 1.0"/>
       </material>
     </visual>
-    <collision>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry>
-        <mesh filename="package://moonmapper_description/meshes/visual/wheel_l1_link.stl"
-              scale="1 1 1"/>
-      </geometry>
-    </collision>
+    <xacro:if value="$(arg simple_collision_debug)">
+      <xacro:wheel_primitive_collision/>
+    </xacro:if>
+    <xacro:unless value="$(arg simple_collision_debug)">
+      <xacro:rocker_stl_collision mesh_file="wheel_l1_link.stl"/>
+    </xacro:unless>
     <inertial>
+      <!-- Hjul 0,048 kg + tidl. motor 0,062 kg slatt inn i hjullink (ingen motor_*); sylinder om Y, r=0,045, w=0,039, m=0,11. -->
       <origin xyz="0 0 0" rpy="0 0 0"/>
-      <mass value="0.02"/>
-      <inertia ixx="6e-7" ixy="0" ixz="0"
-               iyy="6e-7" iyz="0"
-               izz="1e-6"/>
+      <mass value="0.110"/>
+      <inertia ixx="0.0000697" ixy="0" ixz="0" iyy="0.0001114" iyz="0" izz="0.0000697"/>
     </inertial>
   </link>
   <joint name="wheel_l1_joint" type="continuous">
     <parent link="rocker_left_link"/>
     <child link="wheel_l1_link"/>
-    <origin xyz="-0.158025 0.023222 -0.091052" rpy="0 0 0"/>
+    <origin xyz="-0.170218 0.040994 -0.100687" rpy="0 0 0"/>
     <axis xyz="0 1 0"/>
-    <dynamics damping="0.005" friction="0.002"/>
-    <limit effort="0.5" velocity="30.0"/>
+    <dynamics damping="0.01" friction="0.0"/>
+    <limit effort="60.0" velocity="40.0"/>
   </joint>
-
-  <!-- Motor for wheel_l1 -->
-  <link name="motor_l1_link">
-    <visual>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry>
-        <mesh filename="package://moonmapper_description/meshes/visual/motor_l1_link.stl"
-              scale="1 1 1"/>
-      </geometry>
-      <material name="moonmapper_dark_gray">
-        <color rgba="0.35 0.35 0.35 1.0"/>
-      </material>
-    </visual>
-    <inertial>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <mass value="0.001"/>
-      <inertia ixx="1e-8" ixy="0" ixz="0" iyy="1e-8" iyz="0" izz="1e-8"/>
-    </inertial>
-  </link>
-  <joint name="motor_l1_joint" type="fixed">
-    <parent link="wheel_l1_link"/>
-    <child link="motor_l1_link"/>
-    <origin xyz="0.007466 -0.015904 0.003808" rpy="0 0 0"/>
-  </joint>
-
   <link name="wheel_l2_link">
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="package://moonmapper_description/meshes/visual/wheel_l2_link.stl"
-              scale="1 1 1"/>
+        <mesh filename="package://moonmapper_description/meshes/visual/wheel_l2_link.stl" scale="1 1 1"/>
       </geometry>
       <material name="moonmapper_dark_gray">
         <color rgba="0.35 0.35 0.35 1.0"/>
       </material>
     </visual>
-    <collision>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry>
-        <mesh filename="package://moonmapper_description/meshes/visual/wheel_l2_link.stl"
-              scale="1 1 1"/>
-      </geometry>
-    </collision>
+    <xacro:if value="$(arg simple_collision_debug)">
+      <xacro:wheel_primitive_collision/>
+    </xacro:if>
+    <xacro:unless value="$(arg simple_collision_debug)">
+      <xacro:rocker_stl_collision mesh_file="wheel_l2_link.stl"/>
+    </xacro:unless>
     <inertial>
+      <!-- Hjul 0,048 kg + tidl. motor 0,062 kg slatt inn i hjullink (ingen motor_*); sylinder om Y, r=0,045, w=0,039, m=0,11. -->
       <origin xyz="0 0 0" rpy="0 0 0"/>
-      <mass value="0.02"/>
-      <inertia ixx="6e-7" ixy="0" ixz="0"
-               iyy="6e-7" iyz="0"
-               izz="1e-6"/>
+      <mass value="0.110"/>
+      <inertia ixx="0.0000697" ixy="0" ixz="0" iyy="0.0001114" iyz="0" izz="0.0000697"/>
     </inertial>
   </link>
   <joint name="wheel_l2_joint" type="continuous">
     <parent link="bogie_left_link"/>
     <child link="wheel_l2_link"/>
-    <origin xyz="-0.087420 0.000814 -0.050261" rpy="0 0 0"/>
+    <origin xyz="-0.087657 0.020188 -0.050374" rpy="0 0 0"/>
     <axis xyz="0 1 0"/>
-    <dynamics damping="0.005" friction="0.002"/>
-    <limit effort="0.5" velocity="30.0"/>
+    <dynamics damping="0.01" friction="0.0"/>
+    <limit effort="60.0" velocity="40.0"/>
   </joint>
-
-  <!-- Motor for wheel_l2 -->
-  <link name="motor_l2_link">
-    <visual>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry>
-        <mesh filename="package://moonmapper_description/meshes/visual/motor_l2_link.stl"
-              scale="1 1 1"/>
-      </geometry>
-      <material name="moonmapper_dark_gray">
-        <color rgba="0.35 0.35 0.35 1.0"/>
-      </material>
-    </visual>
-    <inertial>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <mass value="0.001"/>
-      <inertia ixx="1e-8" ixy="0" ixz="0" iyy="1e-8" iyz="0" izz="1e-8"/>
-    </inertial>
-  </link>
-  <joint name="motor_l2_joint" type="fixed">
-    <parent link="wheel_l2_link"/>
-    <child link="motor_l2_link"/>
-    <origin xyz="0.007585 -0.015904 0.003903" rpy="0 0 0"/>
-  </joint>
-
   <link name="wheel_l3_link">
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="package://moonmapper_description/meshes/visual/wheel_l3_link.stl"
-              scale="1 1 1"/>
+        <mesh filename="package://moonmapper_description/meshes/visual/wheel_l3_link.stl" scale="1 1 1"/>
       </geometry>
       <material name="moonmapper_dark_gray">
         <color rgba="0.35 0.35 0.35 1.0"/>
       </material>
     </visual>
-    <collision>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry>
-        <mesh filename="package://moonmapper_description/meshes/visual/wheel_l3_link.stl"
-              scale="1 1 1"/>
-      </geometry>
-    </collision>
+    <xacro:if value="$(arg simple_collision_debug)">
+      <xacro:wheel_primitive_collision/>
+    </xacro:if>
+    <xacro:unless value="$(arg simple_collision_debug)">
+      <xacro:rocker_stl_collision mesh_file="wheel_l3_link.stl"/>
+    </xacro:unless>
     <inertial>
+      <!-- Hjul 0,048 kg + tidl. motor 0,062 kg slatt inn i hjullink (ingen motor_*); sylinder om Y, r=0,045, w=0,039, m=0,11. -->
       <origin xyz="0 0 0" rpy="0 0 0"/>
-      <mass value="0.02"/>
-      <inertia ixx="6e-7" ixy="0" ixz="0"
-               iyy="6e-7" iyz="0"
-               izz="1e-6"/>
+      <mass value="0.110"/>
+      <inertia ixx="0.0000697" ixy="0" ixz="0" iyy="0.0001114" iyz="0" izz="0.0000697"/>
     </inertial>
   </link>
   <!-- wheel l3 joint -->
   <joint name="wheel_l3_joint" type="continuous">
     <parent link="bogie_left_link"/>
     <child link="wheel_l3_link"/>
-    <origin xyz="0.083864 0.000953 -0.048213" rpy="0 0 0"/>
+    <origin xyz="0.082028 0.018253 -0.048351" rpy="0 0 0"/>
     <axis xyz="0 1 0"/>
-    <dynamics damping="0.005" friction="0.002"/>
-    <limit effort="0.5" velocity="30.0"/>
+    <dynamics damping="0.01" friction="0.0"/>
+    <limit effort="60.0" velocity="40.0"/>
   </joint>
-
-  <!-- Motor for wheel_l3 -->
-  <link name="motor_l3_link">
-    <visual>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry>
-        <mesh filename="package://moonmapper_description/meshes/visual/motor_l3_link.stl"
-              scale="1 1 1"/>
-      </geometry>
-      <material name="moonmapper_dark_gray">
-        <color rgba="0.35 0.35 0.35 1.0"/>
-      </material>
-    </visual>
-    <inertial>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <mass value="0.001"/>
-      <inertia ixx="1e-8" ixy="0" ixz="0" iyy="1e-8" iyz="0" izz="1e-8"/>
-    </inertial>
-  </link>
-  <joint name="motor_l3_joint" type="fixed">
-    <parent link="wheel_l3_link"/>
-    <child link="motor_l3_link"/>
-    <origin xyz="-0.007052 -0.015917 0.004484" rpy="0 0 0"/>
-  </joint>
-
-  <!-- ===============================================================
-       Transmissions (6 hjulmotorer)
-       ===============================================================
-       Disse gjør hjulene "actuated" i URDF (brukes av ros2_control / plugins).
-       Mekanisk reduksjon settes til 1:1 som default. -->
-
+  <!-- =============================================================== Transmissions (ros2_control: 6 hjul-akser) =============================================================== SimpleTransmission: joint → actuator (navn * _motor er ros2_control-konvensjon, ingen motor_link). Reduksjon 1:1. -->
   <transmission name="wheel_l1_trans">
     <type>transmission_interface/SimpleTransmission</type>
     <joint name="wheel_l1_joint">
@@ -739,7 +576,6 @@
       <mechanicalReduction>1</mechanicalReduction>
     </actuator>
   </transmission>
-
   <transmission name="wheel_l2_trans">
     <type>transmission_interface/SimpleTransmission</type>
     <joint name="wheel_l2_joint">
@@ -750,7 +586,6 @@
       <mechanicalReduction>1</mechanicalReduction>
     </actuator>
   </transmission>
-
   <transmission name="wheel_l3_trans">
     <type>transmission_interface/SimpleTransmission</type>
     <joint name="wheel_l3_joint">
@@ -761,7 +596,6 @@
       <mechanicalReduction>1</mechanicalReduction>
     </actuator>
   </transmission>
-
   <transmission name="wheel_r1_trans">
     <type>transmission_interface/SimpleTransmission</type>
     <joint name="wheel_r1_joint">
@@ -772,7 +606,6 @@
       <mechanicalReduction>1</mechanicalReduction>
     </actuator>
   </transmission>
-
   <transmission name="wheel_r2_trans">
     <type>transmission_interface/SimpleTransmission</type>
     <joint name="wheel_r2_joint">
@@ -783,7 +616,6 @@
       <mechanicalReduction>1</mechanicalReduction>
     </actuator>
   </transmission>
-
   <transmission name="wheel_r3_trans">
     <type>transmission_interface/SimpleTransmission</type>
     <joint name="wheel_r3_joint">
@@ -794,456 +626,373 @@
       <mechanicalReduction>1</mechanicalReduction>
     </actuator>
   </transmission>
-
-<link name="rocker_bogie_diff_link">
-  <visual>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
-    <geometry>
-      <mesh filename="package://moonmapper_description/meshes/visual/rocker_bogie_diff_link.stl"
-            scale="1 1 1"/>
-    </geometry>
-    <material name="moonmapper_dark_gray">
-      <color rgba="0.35 0.35 0.35 1.0"/>
-    </material>
-  </visual>
-  <collision>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
-    <geometry>
-      <mesh filename="package://moonmapper_description/meshes/visual/rocker_bogie_diff_link.stl"
-            scale="1 1 1"/>
-    </geometry>
-  </collision>
-  <inertial>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
-    <mass value="0.005"/>
-    <inertia ixx="1e-7" ixy="0" ixz="0"
-             iyy="1e-7" iyz="0"
-             izz="1e-7"/>
-  </inertial>
-</link>
-
-<!-- ===============================================================
-     VISUELL "TIP"-GEOMETRI FOR PUSHRODS VED DIFF-BEAM
-
-     URDF kan ikke representere den lukkede løkken (stang-tupp <-> beam-ende).
-     For å unngå at stang_endene ser ut som de "stikker ut", legger vi inn
-     to små endebeslag som er barn av diff-beamet. Disse følger diffens yaw
-     (rocker_bogie_diff_joint), slik at den visuelle mekanikken ser korrekt ut
-     selv om den fysiske koblingen håndheves av pluginen via rocker-constraint.
-
-     Plassering bruker samme halvlengde som dokumentert i diff-kommentaren:
-       diff-stav halvlengde ≈ 0.0747 m langs Y i diff-link frame.
-     =============================================================== -->
-<link name="stang_left_tip_link">
-  <!-- Bruk primitiv visual her: mesh-filene hengsel_diff_* finnes ikke i
-       moonmapper_description/meshes/visual i denne repo-versjonen. -->
-  <visual>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
-    <geometry>
-      <sphere radius="0.004"/>
-    </geometry>
-    <material name="moonmapper_dark_gray">
-      <color rgba="0.35 0.35 0.35 1.0"/>
-    </material>
-  </visual>
-  <inertial>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
-    <mass value="0.001"/>
-    <inertia ixx="1e-8" ixy="0" ixz="0" iyy="1e-8" iyz="0" izz="1e-8"/>
-  </inertial>
-</link>
-<joint name="stang_left_tip_joint" type="fixed">
-  <parent link="rocker_bogie_diff_link"/>
-  <child link="stang_left_tip_link"/>
-  <origin xyz="0.0 0.0747 0.0" rpy="0 0 0"/>
-</joint>
-
-<link name="stang_right_tip_link">
-  <visual>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
-    <geometry>
-      <sphere radius="0.004"/>
-    </geometry>
-    <material name="moonmapper_dark_gray">
-      <color rgba="0.35 0.35 0.35 1.0"/>
-    </material>
-  </visual>
-  <inertial>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
-    <mass value="0.001"/>
-    <inertia ixx="1e-8" ixy="0" ixz="0" iyy="1e-8" iyz="0" izz="1e-8"/>
-  </inertial>
-</link>
-<joint name="stang_right_tip_joint" type="fixed">
-  <parent link="rocker_bogie_diff_link"/>
-  <child link="stang_right_tip_link"/>
-  <origin xyz="0.0 -0.0747 0.0" rpy="0 0 0"/>
-</joint>
-
-<!-- Walking-beam staven paa toppen av chassiset.
-     Kinematisk utledning (virtuelt ball-link mellom push-arm-tupp og stav-ende):
-       push-arm-tupp i rocker-frame: (-0.106, -0.001, +0.061) m
-       diff-stav halvlengde:         0.0747 m (Y-akse)
-       Linearisert X-bevegelse:
-         d_arm = 0.061 * theta_R   (rotasjon om Y, cos-ledd forsvinner for smaa vinkler)
-         d_bar = 0.0747 * phi      (yaw om Z)
-         => phi = (0.061 / 0.0747) * theta_R = 0.82 * theta_R
-     I Gazebo overstyres dette av RockerBogieDifferential-plugin-en. -->
-<joint name="rocker_bogie_diff_joint" type="revolute">
-  <parent link="feste_rocker_karosseri_link"/>
-  <child link="rocker_bogie_diff_link"/>
-  <origin xyz="0.000012 0.000001 0.014" rpy="0 0 0"/>
-  <axis xyz="0 0 1"/>
-  <!-- Diff-staven er en lett, kosmetisk link som PD-drives i Gazebo.
-       Høy URDF-damping/friction her kan låse hele rocker-systemet indirekte.
-       Hold den derfor myk; stabilisering skjer i pluginens PD-gains. -->
-  <dynamics damping="0.02" friction="0.002"/>
-  <!-- Ikke la diff-leddet mettes på lav velocity-limit; det er en "kosmetisk"
-       ledd som må kunne følge pluginens target uten å klippe hastigheten. -->
-  <limit lower="${-90*deg}" upper="${90*deg}" effort="100" velocity="10.0"/>
-  <xacro:if value="$(arg enable_urdf_mimic)">
-    <mimic joint="rocker_right_joint" multiplier="0.82" offset="0.0"/>
-  </xacro:if>
-</joint>
-
-<!-- === Tak (skroghette over kjernen av chassiset) === -->
-<link name="tak_liten_link">
-  <visual>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
-    <geometry>
-      <mesh filename="package://moonmapper_description/meshes/visual/Tak_liten_link.stl"
-            scale="1 1 1"/>
-    </geometry>
-    <material name="moonmapper_light_gray">
-      <color rgba="0.7 0.7 0.7 1.0"/>
-    </material>
-  </visual>
-  <inertial>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
-    <mass value="0.010"/>
-    <inertia ixx="1e-7" ixy="0" ixz="0"
-             iyy="1e-7" iyz="0"
-             izz="1e-7"/>
-  </inertial>
-</link>
-<joint name="tak_liten_joint" type="fixed">
-  <parent link="base_link"/>
-  <child link="tak_liten_link"/>
-  <origin xyz="0.100194 -0.000939 0.079219" rpy="0 0 0"/>
-</joint>
-
-<!-- === Feste mellom karosseri og rocker-aksel (chassis-braket) === -->
-<link name="feste_rocker_karosseri_link">
-  <visual>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
-    <geometry>
-      <mesh filename="package://moonmapper_description/meshes/visual/feste_rocker_til_karosseri_link.stl"
-            scale="1 1 1"/>
-    </geometry>
-    <material name="moonmapper_dark_gray">
-      <color rgba="0.35 0.35 0.35 1.0"/>
-    </material>
-  </visual>
-  <inertial>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
-    <mass value="0.005"/>
-    <inertia ixx="1e-8" ixy="0" ixz="0"
-             iyy="1e-8" iyz="0"
-             izz="1e-8"/>
-  </inertial>
-</link>
-<joint name="feste_rocker_karosseri_joint" type="fixed">
-  <parent link="base_link"/>
-  <child link="feste_rocker_karosseri_link"/>
-  <origin xyz="-0.091807 -0.001085 0.062183" rpy="0 0 0"/>
-</joint>
-
-
-
-
-
-
-<!-- =============================================================== -->
-<!-- SENSORER: IMU + stereokamera                                    -->
-<!--                                                                 -->
-<!-- Linkene defineres her i base-URDF slik at BAADE RViz og Gazebo  -->
-<!-- ser samme kinematikk/TF. Fysikk- og sensor-tag-ene ligger i     -->
-<!-- moonmapper_rover_gazebo.urdf.xacro (aktiveres kun i sim).       -->
-<!-- =============================================================== -->
-
-<!-- === IMU (midten av basen, like over CG) === -->
-<!-- Bruker nytt STL-mesh fra Blender. Om meshen vises forskjoevet,
-     sett joint-origo til "0 0 0" (hvis mesh-koordinater allerede
-     er i base_link-frame) eller oppgi reell xyz fra Blender. -->
-
-<link name="imu_link">
-  <visual>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
-    <geometry>
-      <mesh filename="package://moonmapper_description/meshes/visual/IMU_link.stl"
-            scale="1 1 1"/>
-    </geometry>
-    <material name="imu_blue">
-      <color rgba="0.1 0.3 0.9 1.0"/>
-    </material>
-  </visual>
-  <inertial>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
-    <mass value="0.002"/>
-    <inertia ixx="1e-8" ixy="0" ixz="0"
-             iyy="1e-8" iyz="0"
-             izz="1e-8"/>
-  </inertial>
-</link>
-<joint name="imu_joint" type="fixed">
-  <parent link="base_link"/>
-  <child link="imu_link"/>
-  <origin xyz="0.001234 -0.000060 0.003194" rpy="0 0 0"/>
-</joint>
-
-<!-- === Stereokamera-hus (fronten av basen) === -->
-<!-- Mesh er ~4x13x4 mm, oppgitt i meter.
-     Plasseres paa fronten av basen, litt over toppen. -->
-<link name="stereo_camera_link">
-  <visual>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
-    <geometry>
-      <mesh filename="package://moonmapper_description/meshes/visual/steriokamera_link.stl"
-            scale="1 1 1"/>
-    </geometry>
-    <material name="cam_black">
-      <color rgba="0.1 0.1 0.1 1.0"/>
-    </material>
-  </visual>
-  <collision>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
-    <geometry>
-      <mesh filename="package://moonmapper_description/meshes/visual/steriokamera_link.stl"
-            scale="1 1 1"/>
-    </geometry>
-  </collision>
-  <inertial>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
-    <mass value="0.010"/>
-    <inertia ixx="2e-7" ixy="0" ixz="0"
-             iyy="2e-7" iyz="0"
-             izz="2e-7"/>
-  </inertial>
-</link>
-<joint name="stereo_camera_joint" type="fixed">
-  <parent link="base_link"/>
-  <child link="stereo_camera_link"/>
-  <!-- CAD-opprinnelig posisjon fra Blender-prosjektet. Selve
-       kamera-SENSOREN (Gazebo) festes direkte paa base_link med
-       pose-offset i gz xacro-wrapperen, slik at hverken render-
-       rekkefoelgen eller fixed-joint-lumping paavirker kamera-
-       posen. Denne link-en er kun for visual mesh + TF. -->
-  <origin xyz="-0.166163 -0.008930 0.069183" rpy="0 0 0"/>
-</joint>
-
-<!-- === Venstre kamera: fysisk frame + optisk frame === -->
-<!-- Venstre = +y (ROS: +y peker til venstre) -->
-<link name="stereo_left_camera_link">
-  <inertial>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
-    <mass value="0.001"/>
-    <inertia ixx="1e-9" ixy="0" ixz="0"
-             iyy="1e-9" iyz="0"
-             izz="1e-9"/>
-  </inertial>
-</link>
-<joint name="stereo_left_camera_joint" type="fixed">
-  <parent link="stereo_camera_link"/>
-  <child link="stereo_left_camera_link"/>
-  <origin xyz="-0.024178 0.024515 -0.006769" rpy="0 0 0"/>
-</joint>
-
-<!-- Optisk frame: ROS-konvensjon (x=right, y=down, z=forward)
-     rotert fra fysisk frame (x=forward, y=left, z=up) -->
-<link name="stereo_left_optical_frame"/>
-<joint name="stereo_left_optical_joint" type="fixed">
-  <parent link="stereo_left_camera_link"/>
-  <child link="stereo_left_optical_frame"/>
-  <!-- ROS optical frame: x=right, y=down, z=forward -->
-  <origin xyz="-0.024178 0.024515 -0.006769" rpy="-1.57079632679 0 -1.57079632679"/>
-</joint>
-
-<!-- === Hoeyre kamera === -->
-<link name="stereo_right_camera_link">
-  <inertial>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
-    <mass value="0.001"/>
-    <inertia ixx="1e-9" ixy="0" ixz="0"
-             iyy="1e-9" iyz="0"
-             izz="1e-9"/>
-  </inertial>
-</link>
-<joint name="stereo_right_camera_joint" type="fixed">
-  <parent link="stereo_camera_link"/>
-  <child link="stereo_right_camera_link"/>
-  <origin xyz="-0.024077 -0.032034 -0.005843" rpy="0 0 0"/>
-</joint>
-
-<link name="stereo_right_optical_frame"/>
-<joint name="stereo_right_optical_joint" type="fixed">
-  <parent link="stereo_right_camera_link"/>
-  <child link="stereo_right_optical_frame"/>
-  <!-- ROS optical frame: x=right, y=down, z=forward -->
-  <origin xyz="-0.024077 -0.032034 -0.005843" rpy="-1.57079632679 0 -1.57079632679"/>
-</joint>
-
-<!-- ====== Depth / RGB-D-kamera ======
-     Samme fysisk hus som stereokameraet, sentrert midt mellom
-     venstre og hoeyre RGB-sensor. Ren TF-link; Gazebo-sensoren
-     festes direkte paa base_link med <pose> (se gz-xacro). -->
-<link name="depth_camera_link">
-  <inertial>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
-    <mass value="0.001"/>
-    <inertia ixx="1e-9" ixy="0" ixz="0"
-             iyy="1e-9" iyz="0"
-             izz="1e-9"/>
-  </inertial>
-</link>
-<joint name="depth_camera_joint" type="fixed">
-  <parent link="stereo_camera_link"/>
-  <child link="depth_camera_link"/>
-  <origin xyz="-0.024258 -0.005494 -0.007196" rpy="0 0 0"/>
-</joint>
-
-<link name="depth_camera_optical_frame"/>
-<joint name="depth_camera_optical_joint" type="fixed">
-  <parent link="depth_camera_link"/>
-  <child link="depth_camera_optical_frame"/>
-  <!-- ROS optical frame: x=right, y=down, z=forward -->
-  <origin xyz="-0.024258 -0.005494 -0.007196" rpy="-1.57079632679 0 -1.57079632679"/>
-</joint>
-
-
-<!-- =============================================================== -->
-<!-- NYE KOMPONENTER fra Blender-modellen                            -->
-<!--                                                                 -->
-<!-- Alle joint-origos er satt til "0 0 0" og forutsetter at         -->
-<!-- STL-meshen ble eksportert UTEN aa re-origine objektet i         -->
-<!-- Blender - dvs. at vertex-koordinater staar i foreldrens frame   -->
-<!-- (typisk base_link/world). Hvis noe vises forskjoevet i RViz,    -->
-<!-- oppdater joint-origo til Blender-lokasjonen til objektet.       -->
-<!-- =============================================================== -->
-
-<!-- === Braketter som kobler rocker til bogie-pivot (venstre/hoeyre) === -->
-<!-- Festet til rocker-linken slik at bracketen roterer med rockeren. -->
-
-<!-- === Hall-effekt-sensor (festet paa basen for rotasjonsmaaling) === -->
-<link name="halleffekt_sensor_link">
-  <visual>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
-    <geometry>
-      <mesh filename="package://moonmapper_description/meshes/visual/Hallefektsensor_link.stl"
-            scale="1 1 1"/>
-    </geometry>
-    <material name="halleffekt_green">
-      <color rgba="0.1 0.6 0.2 1.0"/>
-    </material>
-  </visual>
-  <inertial>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
-    <mass value="0.003"/>
-    <inertia ixx="1e-9" ixy="0" ixz="0"
-             iyy="1e-9" iyz="0"
-             izz="1e-9"/>
-  </inertial>
-</link>
-<joint name="halleffekt_sensor_joint" type="fixed">
-  <parent link="rocker_right_link"/>
-  <child link="halleffekt_sensor_link"/>
-  <origin xyz="-0.155776 -0.011745 -0.088736" rpy="0 0 0"/>
-</joint>
-
-<!-- === Mikroskop (nede-pekende observasjonskamera) === -->
-<link name="mikroskop_link">
-  <visual>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
-    <geometry>
-      <mesh filename="package://moonmapper_description/meshes/visual/Mikroskop_link.stl"
-            scale="1 1 1"/>
-    </geometry>
-    <material name="cam_black">
-      <color rgba="0.1 0.1 0.1 1.0"/>
-    </material>
-  </visual>
-  <inertial>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
-    <mass value="0.005"/>
-    <inertia ixx="1e-8" ixy="0" ixz="0"
-             iyy="1e-8" iyz="0"
-             izz="1e-8"/>
-  </inertial>
-</link>
-<joint name="mikroskop_joint" type="fixed">
-  <parent link="base_link"/>
-  <child link="mikroskop_link"/>
-  <origin xyz="-0.091849 -0.001046 -0.006375" rpy="0 0 0"/>
-</joint>
-
-<!-- Optisk frame for mikroskop (ROS optical convention) -->
-<link name="mikroskop_optical_frame"/>
-<joint name="mikroskop_optical_joint" type="fixed">
-  <parent link="mikroskop_link"/>
-  <child link="mikroskop_optical_frame"/>
-  <!-- ROS optical frame: x=right, y=down, z=forward -->
-  <origin xyz="0 0 0" rpy="-1.57079632679 0 -1.57079632679"/>
-</joint>
-
-<!-- === Triad-sensorer (magnetometer/solvektor) === -->
-<link name="triad_sensor_1_link">
-  <visual>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
-    <geometry>
-      <mesh filename="package://moonmapper_description/meshes/visual/triadsensor1_link.stl"
-            scale="1 1 1"/>
-    </geometry>
-    <material name="triad_orange">
-      <color rgba="0.95 0.55 0.1 1.0"/>
-    </material>
-  </visual>
-  <inertial>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
-    <mass value="0.002"/>
-    <inertia ixx="1e-9" ixy="0" ixz="0"
-             iyy="1e-9" iyz="0"
-             izz="1e-9"/>
-  </inertial>
-</link>
-<joint name="triad_sensor_1_joint" type="fixed">
-  <parent link="base_link"/>
-  <child link="triad_sensor_1_link"/>
-  <origin xyz="-0.091911 0.046088 -0.043464" rpy="0 0 0"/>
-</joint>
-
-<link name="triad_sensor_2_link">
-  <visual>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
-    <geometry>
-      <mesh filename="package://moonmapper_description/meshes/visual/triadsensor2_link.stl"
-            scale="1 1 1"/>
-    </geometry>
-    <material name="triad_orange">
-      <color rgba="0.95 0.55 0.1 1.0"/>
-    </material>
-  </visual>
-  <inertial>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
-    <mass value="0.002"/>
-    <inertia ixx="1e-9" ixy="0" ixz="0"
-             iyy="1e-9" iyz="0"
-             izz="1e-9"/>
-  </inertial>
-</link>
-<joint name="triad_sensor_2_joint" type="fixed">
-  <parent link="base_link"/>
-  <child link="triad_sensor_2_link"/>
-  <origin xyz="-0.091834 -0.048139 -0.043518" rpy="0 0 0"/>
-</joint>
-
-
+  <!-- feste_rocker_karosseri maa defineres FOER rocker_bogie_diff_joint (foreldre-link). -->
+  <link name="feste_rocker_karosseri_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://moonmapper_description/meshes/visual/feste_rocker_til_karosseri_link.stl" scale="1 1 1"/>
+      </geometry>
+      <material name="moonmapper_dark_gray">
+        <color rgba="0.35 0.35 0.35 1.0"/>
+      </material>
+    </visual>
+    <inertial>
+      <!-- Målt stand/lang skrue ~0,020 kg; treghet estimert som liten boks ~25×25×15 mm. -->
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.020"/>
+      <inertia ixx="1.4e-6" ixy="0" ixz="0" iyy="2.1e-6" iyz="0" izz="2.1e-6"/>
+    </inertial>
+  </link>
+  <joint name="feste_rocker_karosseri_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="feste_rocker_karosseri_link"/>
+    <origin xyz="-0.091807 -0.001085 0.062183" rpy="0 0 0"/>
+  </joint>
+  <link name="rocker_bogie_diff_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://moonmapper_description/meshes/visual/rocker_bogie_diff_link.stl" scale="1 1 1"/>
+      </geometry>
+      <material name="moonmapper_dark_gray">
+        <color rgba="0.35 0.35 0.35 1.0"/>
+      </material>
+    </visual>
+    <xacro:if value="$(arg simple_collision_debug)">
+      <xacro:diff_bar_primitive_collision/>
+    </xacro:if>
+    <xacro:unless value="$(arg simple_collision_debug)">
+      <xacro:rocker_stl_collision mesh_file="rocker_bogie_diff_link.stl"/>
+    </xacro:unless>
+    <!-- Målt diff-stav 0,060 kg; treghet homogen boks = diff_bar_primitive_collision (0,16×0,028×0,028 m). -->
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.060"/>
+      <inertia ixx="0.00000784" ixy="0" ixz="0" iyy="0.0001319" iyz="0" izz="0.0001319"/>
+    </inertial>
+  </link>
+  <!-- =============================================================== VISUELL "TIP"-GEOMETRI FOR PUSHRODS VED DIFF-BEAM URDF kan ikke representere den lukkede løkken (stang-tupp <-> beam-ende). For å unngå at stang_endene ser ut som de "stikker ut", legger vi inn to små endebeslag som er barn av diff-beamet. Disse følger diffens yaw (rocker_bogie_diff_joint), slik at den visuelle mekanikken ser korrekt ut selv om den fysiske koblingen håndheves av pluginen via rocker-constraint. Plassering bruker samme halvlengde som dokumentert i diff-kommentaren: diff-stav halvlengde ≈ 0.0747 m langs Y i diff-link frame. =============================================================== -->
+  <link name="stang_left_tip_link">
+    <!-- Bruk primitiv visual her: mesh-filene hengsel_diff_* finnes ikke i moonmapper_description/meshes/visual i denne repo-versjonen. -->
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <sphere radius="0.004"/>
+      </geometry>
+      <material name="moonmapper_dark_gray">
+        <color rgba="0.35 0.35 0.35 1.0"/>
+      </material>
+    </visual>
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.001"/>
+      <inertia ixx="1e-8" ixy="0" ixz="0" iyy="1e-8" iyz="0" izz="1e-8"/>
+    </inertial>
+  </link>
+  <joint name="stang_left_tip_joint" type="fixed">
+    <parent link="rocker_bogie_diff_link"/>
+    <child link="stang_left_tip_link"/>
+    <origin xyz="0.0 0.0747 0.0" rpy="0 0 0"/>
+  </joint>
+  <link name="stang_right_tip_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <sphere radius="0.004"/>
+      </geometry>
+      <material name="moonmapper_dark_gray">
+        <color rgba="0.35 0.35 0.35 1.0"/>
+      </material>
+    </visual>
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.001"/>
+      <inertia ixx="1e-8" ixy="0" ixz="0" iyy="1e-8" iyz="0" izz="1e-8"/>
+    </inertial>
+  </link>
+  <joint name="stang_right_tip_joint" type="fixed">
+    <parent link="rocker_bogie_diff_link"/>
+    <child link="stang_right_tip_link"/>
+    <origin xyz="0.0 -0.0747 0.0" rpy="0 0 0"/>
+  </joint>
+  <!-- Walking-beam staven paa toppen av chassiset. Kinematisk utledning (virtuelt ball-link mellom push-arm-tupp og stav-ende): push-arm-tupp i rocker-frame: (-0.106, -0.001, +0.061) m diff-stav halvlengde: 0.0747 m (Y-akse) Linearisert X-bevegelse: d_arm = 0.061 * theta_R (rotasjon om Y, cos-ledd forsvinner for smaa vinkler) d_bar = 0.0747 * phi (yaw om Z) => phi = (0.061 / 0.0747) * theta_R = 0.82 * theta_R I Gazebo Sim styres diff-vinkelen av RockerBogieDifferential-plugin (q_diff* = -0.41*q_L + 0.41*q_R gir 0.82*q_R naar q_L = -q_R). -->
+  <joint name="rocker_bogie_diff_joint" type="revolute">
+    <parent link="feste_rocker_karosseri_link"/>
+    <child link="rocker_bogie_diff_link"/>
+    <origin xyz="0.000012 0.000001 0.014" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <!-- Diff-staven er lett; lav URDF-demping så plugin/terreng ikke konkurrerer. -->
+    <dynamics damping="0.05" friction="0.015"/>
+    <!-- Høy effort/velocity-limit slik at passiv diff ikke klipper unødig. -->
+    <limit lower="${-90*deg}" upper="${90*deg}" effort="100" velocity="10.0"/>
+    <xacro:if value="$(arg enable_urdf_mimic)">
+      <mimic joint="rocker_right_joint" multiplier="0.82" offset="0.0"/>
+    </xacro:if>
+  </joint>
+  <!-- === Tak (skroghette over kjernen av chassiset) === -->
+  <link name="tak_liten_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://moonmapper_description/meshes/visual/Tak_liten_link.stl" scale="1 1 1"/>
+      </geometry>
+      <material name="moonmapper_light_gray">
+        <color rgba="0.7 0.7 0.7 1.0"/>
+      </material>
+    </visual>
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.010"/>
+      <inertia ixx="1e-7" ixy="0" ixz="0" iyy="1e-7" iyz="0" izz="1e-7"/>
+    </inertial>
+  </link>
+  <joint name="tak_liten_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="tak_liten_link"/>
+    <origin xyz="0.100194 -0.000939 0.079219" rpy="0 0 0"/>
+  </joint>
+  <!-- =============================================================== -->
+  <!-- SENSORER: IMU + stereokamera -->
+  <!-- -->
+  <!-- Linkene defineres her i base-URDF slik at BAADE RViz og Gazebo -->
+  <!-- ser samme kinematikk/TF. Fysikk- og sensor-tag-ene ligger i -->
+  <!-- moonmapper_rover_gazebo.urdf.xacro (aktiveres kun i sim). -->
+  <!-- =============================================================== -->
+  <!-- === IMU (midten av basen, like over CG) === -->
+  <!-- Bruker nytt STL-mesh fra Blender. Om meshen vises forskjoevet, sett joint-origo til "0 0 0" (hvis mesh-koordinater allerede er i base_link-frame) eller oppgi reell xyz fra Blender. -->
+  <link name="imu_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://moonmapper_description/meshes/visual/IMU_link.stl" scale="1 1 1"/>
+      </geometry>
+      <material name="imu_blue">
+        <color rgba="0.1 0.3 0.9 1.0"/>
+      </material>
+    </visual>
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.002"/>
+      <inertia ixx="1e-8" ixy="0" ixz="0" iyy="1e-8" iyz="0" izz="1e-8"/>
+    </inertial>
+  </link>
+  <joint name="imu_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="imu_link"/>
+    <origin xyz="0.001234 -0.000060 0.003194" rpy="0 0 0"/>
+  </joint>
+  <!-- === UWB/BU04-tag (statisk frame for digital tvilling / trilateration) === -->
+  <link name="uwb_tag_link">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.001"/>
+      <inertia ixx="1e-9" ixy="0" ixz="0" iyy="1e-9" iyz="0" izz="1e-9"/>
+    </inertial>
+  </link>
+  <joint name="uwb_tag_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="uwb_tag_link"/>
+    <origin xyz="0 0 0.10" rpy="0 0 0"/>
+  </joint>
+  <!-- === Stereokamera-hus (fronten av basen) === -->
+  <!-- Mesh er ~4x13x4 mm, oppgitt i meter. Plasseres paa fronten av basen, litt over toppen. -->
+  <link name="stereo_camera_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://moonmapper_description/meshes/visual/steriokamera_link.stl" scale="1 1 1"/>
+      </geometry>
+      <material name="cam_black">
+        <color rgba="0.1 0.1 0.1 1.0"/>
+      </material>
+    </visual>
+    <xacro:unless value="$(arg simple_collision_debug)">
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://moonmapper_description/meshes/visual/steriokamera_link.stl" scale="1 1 1"/>
+      </geometry>
+    </collision>
+    </xacro:unless>
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.002"/>
+      <inertia ixx="2e-7" ixy="0" ixz="0" iyy="2e-7" iyz="0" izz="2e-7"/>
+    </inertial>
+  </link>
+  <joint name="stereo_camera_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="stereo_camera_link"/>
+    <!-- CAD-opprinnelig posisjon fra Blender-prosjektet. Selve kamera-SENSOREN (Gazebo) festes direkte paa base_link med pose-offset i gz xacro-wrapperen, slik at hverken render- rekkefoelgen eller fixed-joint-lumping paavirker kamera- posen. Denne link-en er kun for visual mesh + TF. -->
+    <origin xyz="-0.166163 -0.008930 0.069183" rpy="0 0 0"/>
+  </joint>
+  <!-- === Venstre kamera: fysisk frame + optisk frame === -->
+  <!-- Venstre = +y (ROS: +y peker til venstre) -->
+  <link name="stereo_left_camera_link">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.001"/>
+      <inertia ixx="1e-9" ixy="0" ixz="0" iyy="1e-9" iyz="0" izz="1e-9"/>
+    </inertial>
+  </link>
+  <joint name="stereo_left_camera_joint" type="fixed">
+    <parent link="stereo_camera_link"/>
+    <child link="stereo_left_camera_link"/>
+    <origin xyz="-0.024178 0.024515 -0.006769" rpy="0 0 0"/>
+  </joint>
+  <!-- Optisk frame: ROS-konvensjon (x=right, y=down, z=forward) rotert fra fysisk frame (x=forward, y=left, z=up) -->
+  <link name="stereo_left_optical_frame"/>
+  <joint name="stereo_left_optical_joint" type="fixed">
+    <parent link="stereo_left_camera_link"/>
+    <child link="stereo_left_optical_frame"/>
+    <!-- ROS optical frame: x=right, y=down, z=forward -->
+    <origin xyz="-0.024178 0.024515 -0.006769" rpy="-1.57079632679 0 -1.57079632679"/>
+  </joint>
+  <!-- === Hoeyre kamera === -->
+  <link name="stereo_right_camera_link">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.001"/>
+      <inertia ixx="1e-9" ixy="0" ixz="0" iyy="1e-9" iyz="0" izz="1e-9"/>
+    </inertial>
+  </link>
+  <joint name="stereo_right_camera_joint" type="fixed">
+    <parent link="stereo_camera_link"/>
+    <child link="stereo_right_camera_link"/>
+    <origin xyz="-0.024077 -0.032034 -0.005843" rpy="0 0 0"/>
+  </joint>
+  <link name="stereo_right_optical_frame"/>
+  <joint name="stereo_right_optical_joint" type="fixed">
+    <parent link="stereo_right_camera_link"/>
+    <child link="stereo_right_optical_frame"/>
+    <!-- ROS optical frame: x=right, y=down, z=forward -->
+    <origin xyz="-0.024077 -0.032034 -0.005843" rpy="-1.57079632679 0 -1.57079632679"/>
+  </joint>
+  <!-- ====== Depth / RGB-D-kamera ====== Samme fysisk hus som stereokameraet, sentrert midt mellom venstre og hoeyre RGB-sensor. Ren TF-link; Gazebo-sensoren festes direkte paa base_link med <pose> (se gz-xacro). -->
+  <link name="depth_camera_link">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.001"/>
+      <inertia ixx="1e-9" ixy="0" ixz="0" iyy="1e-9" iyz="0" izz="1e-9"/>
+    </inertial>
+  </link>
+  <joint name="depth_camera_joint" type="fixed">
+    <parent link="stereo_camera_link"/>
+    <child link="depth_camera_link"/>
+    <origin xyz="-0.024258 -0.005494 -0.007196" rpy="0 0 0"/>
+  </joint>
+  <link name="depth_camera_optical_frame"/>
+  <joint name="depth_camera_optical_joint" type="fixed">
+    <parent link="depth_camera_link"/>
+    <child link="depth_camera_optical_frame"/>
+    <!-- ROS optical frame: x=right, y=down, z=forward -->
+    <origin xyz="-0.024258 -0.005494 -0.007196" rpy="-1.57079632679 0 -1.57079632679"/>
+  </joint>
+  <!-- =============================================================== -->
+  <!-- NYE KOMPONENTER fra Blender-modellen -->
+  <!-- -->
+  <!-- Alle joint-origos er satt til "0 0 0" og forutsetter at -->
+  <!-- STL-meshen ble eksportert UTEN aa re-origine objektet i -->
+  <!-- Blender - dvs. at vertex-koordinater staar i foreldrens frame -->
+  <!-- (typisk base_link/world). Hvis noe vises forskjoevet i RViz, -->
+  <!-- oppdater joint-origo til Blender-lokasjonen til objektet. -->
+  <!-- =============================================================== -->
+  <!-- === Braketter som kobler rocker til bogie-pivot (venstre/hoeyre) === -->
+  <!-- Festet til rocker-linken slik at bracketen roterer med rockeren. -->
+  <!-- === Hall-effekt-sensor (festet paa basen for rotasjonsmaaling) === -->
+  <link name="halleffekt_sensor_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://moonmapper_description/meshes/visual/Hallefektsensor_link.stl" scale="1 1 1"/>
+      </geometry>
+      <material name="halleffekt_green">
+        <color rgba="0.1 0.6 0.2 1.0"/>
+      </material>
+    </visual>
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.003"/>
+      <inertia ixx="1e-9" ixy="0" ixz="0" iyy="1e-9" iyz="0" izz="1e-9"/>
+    </inertial>
+  </link>
+  <joint name="halleffekt_sensor_joint" type="fixed">
+    <parent link="rocker_right_link"/>
+    <child link="halleffekt_sensor_link"/>
+    <origin xyz="-0.155776 -0.011745 -0.088736" rpy="0 0 0"/>
+  </joint>
+  <!-- === Mikroskop (nede-pekende observasjonskamera) === -->
+  <link name="mikroskop_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://moonmapper_description/meshes/visual/Mikroskop_link.stl" scale="1 1 1"/>
+      </geometry>
+      <material name="cam_black">
+        <color rgba="0.1 0.1 0.1 1.0"/>
+      </material>
+    </visual>
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.005"/>
+      <inertia ixx="1e-8" ixy="0" ixz="0" iyy="1e-8" iyz="0" izz="1e-8"/>
+    </inertial>
+  </link>
+  <joint name="mikroskop_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="mikroskop_link"/>
+    <origin xyz="-0.091849 -0.001046 -0.006375" rpy="0 0 0"/>
+  </joint>
+  <!-- Optisk frame for mikroskop (ROS optical convention) -->
+  <link name="mikroskop_optical_frame"/>
+  <joint name="mikroskop_optical_joint" type="fixed">
+    <parent link="mikroskop_link"/>
+    <child link="mikroskop_optical_frame"/>
+    <!-- ROS optical frame: x=right, y=down, z=forward -->
+    <origin xyz="0 0 0" rpy="-1.57079632679 0 -1.57079632679"/>
+  </joint>
+  <!-- === Triad-sensorer (magnetometer/solvektor) === -->
+  <link name="triad_sensor_1_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://moonmapper_description/meshes/visual/triadsensor1_link.stl" scale="1 1 1"/>
+      </geometry>
+      <material name="triad_orange">
+        <color rgba="0.95 0.55 0.1 1.0"/>
+      </material>
+    </visual>
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.002"/>
+      <inertia ixx="1e-9" ixy="0" ixz="0" iyy="1e-9" iyz="0" izz="1e-9"/>
+    </inertial>
+  </link>
+  <joint name="triad_sensor_1_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="triad_sensor_1_link"/>
+    <origin xyz="-0.091911 0.046088 -0.043464" rpy="0 0 0"/>
+  </joint>
+  <link name="triad_sensor_2_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://moonmapper_description/meshes/visual/triadsensor2_link.stl" scale="1 1 1"/>
+      </geometry>
+      <material name="triad_orange">
+        <color rgba="0.95 0.55 0.1 1.0"/>
+      </material>
+    </visual>
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.002"/>
+      <inertia ixx="1e-9" ixy="0" ixz="0" iyy="1e-9" iyz="0" izz="1e-9"/>
+    </inertial>
+  </link>
+  <joint name="triad_sensor_2_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="triad_sensor_2_link"/>
+    <origin xyz="-0.091834 -0.048139 -0.043518" rpy="0 0 0"/>
+  </joint>
 </robot>

@@ -1,0 +1,31 @@
+# robot_localization EKF — MoonMapper Gazebo, kun hjul-odometri.
+# Aktiveres med use_ekf:=true i gazebo_rover.
+#
+# TF: URDF har base_footprint -> base_link (statisk). diff_drive_controller
+# bruker base_frame_id=base_footprint. EKF må derfor publisere odom -> base_footprint
+# (ikke direkte odom -> base_link), ellers får base_link to foreldre i TF-treet.
+#
+# Senere: IMU, BU04/trilateration, visual odom — ikke i denne konfigurasjonen.
+
+ekf_filter_node:
+  ros__parameters:
+    # 20 Hz gir ~50 ms per syklus — unngar «Failed to meet update rate» nar sim/filter
+    # sporadisk bruker ~40 ms (30 Hz krever <33 ms).
+    frequency: 20.0
+    sensor_timeout: 0.25
+    two_d_mode: true
+    use_sim_time: true
+    publish_tf: true
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_footprint
+    world_frame: odom
+
+    odom0: /diff_drive_controller/odom
+    odom0_config: [true,  true,  false,
+                   false, false, false,
+                   false, false, false,
+                   false, false, true,
+                   false, false, false]
+    odom0_differential: false
+    odom0_relative: false

@@ -1,4 +1,10 @@
-"""Launch slam_toolbox for MoonMapper (included by moonmapper_bringup when use_slam:=true)."""
+"""Launch slam_toolbox for MoonMapper (included by moonmapper_bringup when use_slam:=true).
+
+NB: ARKIVERT BACKUP. Hovedstacken matcher den fysiske rover-en (RTAB-Map +
+Valgfritt SLAM-toolbox-oppsett for MoonMapper.
+Den filen speiler Steps 4-7 i ``rover/setup/startup.md`` og er den nye
+standarden i sim-en. Filen her beholdes som alternativ 2D-laser-pipeline.
+"""
 import os
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument

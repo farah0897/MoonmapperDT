@@ -1,0 +1,5 @@
+# Overlay for ros2_control spawner: legges ETTER diff_drive_controller.yaml
+# når robot_localization EKF skal eie TF odom -> base_footprint.
+diff_drive_controller:
+  ros__parameters:
+    enable_odom_tf: false

@@ -1,7 +1,7 @@
 """
 Legg til en live-måling som ny treningsdata etter at modellen har gjettet.
 
-Dette er en enkel feedback-loop:
+Dette er en feedback-loop:
 1. Modellen predikerer på en live-fil.
 2. Brukeren sier hva riktig fasit er.
 3. Scriptet kopierer live-filen til raw/ og legger til en rad i metadata.csv.

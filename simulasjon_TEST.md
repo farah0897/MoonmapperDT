@@ -4,11 +4,6 @@ Dette dokumentet er en **kombinert testplan** for workspace’et `moonmapper_ws/
 
 - Webots-stack: `moonmapper_bringup/sim.launch.py` + `moonmapper_webots/moonmapper_driver.py`
 - Gazebo-stack (gz-sim8): `moonmapper_bringup/sensor_bringup.launch.py` → `moonmapper_description/gazebo_rover.launch.py`
-- Unity-stack: `moonmapper_description/unity_{minimal,full}.launch.py` + `ros_tcp_endpoint` + `unity_cmd_vel_node.py`
-
-Der det er usikkert eller avhenger av ekstern setup (f.eks. Unity-scene), er det tydelig merket som **bør verifiseres manuelt**.
-
----
 
 ## 0) Forutsetninger (felles)
 
@@ -38,7 +33,7 @@ source install/setup.bash
 ### 1.1 List pakker
 
 ```bash
-ros2 pkg list | grep -E "moonmapper_|ros_tcp_endpoint"
+ros2 pkg list | grep moonmapper_
 ```
 
 **Forventet resultat**
@@ -50,8 +45,7 @@ ros2 pkg list | grep -E "moonmapper_|ros_tcp_endpoint"
   - `moonmapper_control`
   - `moonmapper_msgs`
   - `moonmapper_gz_sensors`
-  - `moonmapper_navigation`, `moonmapper_slam`, `moonmapper_localization`
-  - `ros_tcp_endpoint`
+  - `moonmapper_slam`, `moonmapper_localization`
 
 ### 1.2 List launch-filer (sanity)
 
@@ -433,7 +427,7 @@ Feiltypisk:
 
 ---
 
-## 5) RViz-only: vis robotbeskrivelse og kinematisk coupling
+## 5) RViz-only: vis robotbeskrivelse
 
 ### 5.1 Vis robot i RViz (uten sim)
 
@@ -446,73 +440,11 @@ ros2 launch moonmapper_description view_robot.launch.py
 - RViz åpner med robotmodellen.
 - `joint_state_publisher_gui` lar deg justere joints.
 
-### 5.2 Vis robot med rocker-bogie kinematics-node
-
-```bash
-ros2 launch moonmapper_description view_robot_with_diff.launch.py
-```
-
-**Forventet resultat**
-
-- RViz åpner.
-- `/joint_states_raw` kommer fra JSP GUI og `/joint_states` publiseres av `rocker_diff_joint.py`.
-- Bogie/diff/hinge joints oppfører seg “koblet” når du endrer rocker-joints.
-
 ---
 
-## 6) Unity-stack (ROS-TCP) – røyk-test fra ROS-siden
+## 6) “Dårlige dager”: rask feilsøking
 
-### 6.1 Start minimal Unity-stack (Terminal A)
-
-```bash
-ros2 launch moonmapper_description unity_minimal.launch.py
-```
-
-**Forventet resultat**
-
-- `ros_tcp_endpoint` starter og lytter på port (default 10000, se `unity_params.yaml`).
-- RViz starter (default `use_rviz:=true`).
-
-> **Bør verifiseres manuelt**: at Unity faktisk kan koble til (IP/port) og publiserer `/joint_states` osv.
-
-### 6.2 Start full Unity-stack (Terminal A)
-
-```bash
-ros2 launch moonmapper_description unity_full.launch.py
-```
-
-**Forventet resultat**
-
-- I tillegg til minimal stack starter `unity_cmd_vel_bridge` som publiserer `/unity/wheel_velocities`.
-- Hvis `xterm` er installert og `start_teleop:=true`, starter teleop_twist_keyboard i eget vindu.
-
-### 6.3 Verifiser wheel velocity topic (Terminal B)
-
-```bash
-ros2 topic echo /unity/wheel_velocities --once
-```
-
-**Forventet resultat**
-
-- `std_msgs/Float64MultiArray` med 6 elementer:
-  - `[wheel_l1, wheel_l2, wheel_l3, wheel_r1, wheel_r2, wheel_r3]` i rad/s
-
-Send cmd_vel:
-
-```bash
-ros2 topic pub --rate 10 /cmd_vel geometry_msgs/msg/Twist \
-  "{linear: {x: 0.02}, angular: {z: 0.0}}"
-```
-
-**Forventet resultat**
-
-- `/unity/wheel_velocities` endrer seg (ikke null).
-
----
-
-## 7) “Dårlige dager”: rask feilsøking
-
-### 7.1 Byggfeil / rare symlink-feil
+### 6.1 Byggfeil / rare symlink-feil
 
 Hvis du får “failed to create symbolic link … existing path cannot be removed”, rydd stale artifacts:
 
@@ -521,7 +453,7 @@ rm -rf build/<pakkenavn> install/<pakkenavn>
 colcon build --symlink-install
 ```
 
-### 7.2 Ingen data på topics
+### 6.2 Ingen data på topics
 
 Sjekk at:
 
@@ -539,11 +471,9 @@ ros2 topic hz /clock
 
 ## Referanser i repoet
 
-- Gazebo testing: `src/moonmapper_description/Gazebo_test.md`
 - Level 1 sensors checklist: `src/moonmapper_description/Level1_Sensors.md`
 - Konfig:
   - `src/moonmapper_description/config/ros_gz_bridge.yaml`
   - `src/moonmapper_description/config/wheel_controllers.yaml`
-  - `src/moonmapper_description/config/unity_params.yaml`
   - `src/moonmapper_gz_sensors/config/triad_material_map.yaml`
 

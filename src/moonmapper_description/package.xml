@@ -4,10 +4,7 @@
   <name>moonmapper_description</name>
   <version>0.3.0</version>
   <description>
-    URDF/Xacro, meshes, RViz config, Gazebo Sim 8 plugin og Unity-
-    integrasjon for MoonMapper rocker-bogie-konsept.
-    Gazebo-stack AKTIV (restore_gazebo.sh). Bruk archive_gazebo.sh
-    for aa slaa over til ren Unity-stack.
+    URDF/Xacro, meshes, RViz-konfig, Gazebo Sim 8-plugin og ros2_control for MoonMapper rocker-bogie.
   </description>
   <maintainer email="user@example.com">MoonMapper Team</maintainer>
   <license>Apache-2.0</license>
@@ -44,10 +41,15 @@
   <exec_depend>controller_manager</exec_depend>
   <exec_depend>joint_state_broadcaster</exec_depend>
   <exec_depend>diff_drive_controller</exec_depend>
+  <exec_depend>robot_localization</exec_depend>
 
-  <!-- Unity-stack (valgfri, men holdt inne saa launch-filene ikke knekker) -->
-  <exec_depend>ros_tcp_endpoint</exec_depend>
   <exec_depend>teleop_twist_keyboard</exec_depend>
+
+  <!-- gazebo_rover.launch.py refererer cmd_vel_odom_relay-noden fra
+       moonmapper_bringup. Vi setter ikke exec_depend for a unngaa
+       sirkulaer pakke-avhengighet (moonmapper_bringup depender allerede
+       paa moonmapper_description). Noden resolves via ament_index ved
+       launch-tid. -->
 
   <export>
     <build_type>ament_cmake</build_type>

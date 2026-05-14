@@ -28,39 +28,20 @@ Denne seksjonen er en “hvor ligger hva”-oversikt. Filene er gruppert per ROS
     - `gazebo_rover.launch.py`
     - `sensor_bringup.launch.py` (via `moonmapper_bringup`)
     - `view_robot.launch.py`
-    - `view_robot_with_diff.launch.py`
-    - `rocker_diff_joint.py` (ROS 2 node: `rocker_bogie_kinematics`)
-    - `unity_cmd_vel_node.py`
-    - `unity_minimal.launch.py`
   - `config/`:
     - `jsp_drivers_only.yaml`
     - `wheel_controllers.yaml`
     - `ros_gz_bridge.yaml`
-    - `unity_params.yaml`
   - `gz_plugins/src/`:
     - `RockerBogieDifferential.cc`
   - `worlds/`:
     - `moon_arena.sdf`
-    - `rocker_bogie_test.sdf`
   - `rviz/moonmapper.rviz`
   - `meshes/` (inkl. `meshes/collision/.gitkeep`)
   - `scripts/`:
-    - `archive_gazebo.sh`
-    - `restore_gazebo.sh`
-    - `export_urdf_for_unity.sh`
     - `convert_stl_to_dae.sh`
-  - `unity_scripts/`:
-    - `README.md`
-    - `ArenaBoundary.cs`
-    - `CameraImagePublisher.cs`
-    - `ImuPublisher.cs`
-    - `JointStatePublisher.cs`
-    - `RoverSpawn.cs`
   - Dokumentasjon:
-    - `Gazebo_test.md`
     - `Level1_Sensors.md`
-    - `Unity_setup.md`
-    - `Unity_arena_setup.md`
 - **`src/moonmapper_gz_sensors/`**
   - `package.xml`, `CMakeLists.txt`
   - `gz_plugins/src/TriadSpectroscopy.cc`
@@ -71,11 +52,6 @@ Denne seksjonen er en “hvor ligger hva”-oversikt. Filene er gruppert per ROS
 - **`src/moonmapper_msgs/`**
   - `package.xml`, `CMakeLists.txt`
   - `msg/TriadSpectrum.msg`
-- **`src/moonmapper_navigation/`**
-  - `package.xml`, `CMakeLists.txt`
-  - `launch/nav2.launch.py`
-  - `config/nav2_params.yaml`
-  - `config/nav2_bt_nav_params.yaml`
 - **`src/moonmapper_slam/`**
   - `package.xml`, `CMakeLists.txt`
   - `launch/slam.launch.py`
@@ -86,15 +62,6 @@ Denne seksjonen er en “hvor ligger hva”-oversikt. Filene er gruppert per ROS
   - `moonmapper_webots/moonmapper_driver.py`, `moonmapper_webots/__init__.py`
   - `resource/moonmapper_rover_webots.urdf`
   - `worlds/moonmapper_world.wbt`
-- **`src/ros_tcp_endpoint/`** (tredjepart/bridge mot Unity)
-  - `package.xml`, `setup.py`, `setup.cfg`, `requirements.txt`
-  - `launch/endpoint.py`
-  - `ros_tcp_endpoint/`:
-    - `server.py`, `client.py`, `unity_service.py`
-    - `publisher.py`, `subscriber.py`
-    - `communication.py`, `tcp_sender.py`, `thread_pauser.py`
-    - `default_server_endpoint.py`, `exceptions.py`, `service.py`, `__init__.py`
-  - Repo-meta: `README.md`, `LICENSE`, `CHANGELOG.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `.pre-commit-config.yaml`, `.github/*`, `.yamato/*`, `test/*`, `.gitignore`
 
 ### Øvrige filer i workspace-roten
 
@@ -104,10 +71,7 @@ Denne seksjonen er en “hvor ligger hva”-oversikt. Filene er gruppert per ROS
 - `docs/LEGACY_SCRIPTS.md`
 - `Fysikk.md`
 - `TEST.md`
-- `frames_2026-04-22_19.20.43.gv`
-- `unity_export/moonmapper.urdf`
 - `.gitignore`
-- `.gitmodules`
 
 ## Filtyper i denne kodebasen (hvorfor XML/YAML er viktige)
 
@@ -125,13 +89,13 @@ Denne seksjonen er en “hvor ligger hva”-oversikt. Filene er gruppert per ROS
 YAML brukes nesten alltid til **parameter-konfig** for ROS 2 noder og stacks:
 - **Controller/drivere** (f.eks. `ros2_control` controller-konfig)
 - **Robot-estimering** (f.eks. EKF i `robot_localization`)
-- **Nav2/SLAM** (mange tunables)
+- **SLAM** (mange tunables)
 - **joint_state_publisher(_gui)** (hvilke joints som skal vises/ikke vises som slidere)
 
 ## `moonmapper_bringup` (ROS 2) – sim- og sensor-bringup
 
 **Plassering**: `src/moonmapper_bringup/`  
-**Formål**: Samler launch-filer og konfigurasjon for å starte MoonMapper-roboten i simulering, med valgfritt teleop/estimering/SLAM/Nav2 og RViz.
+**Formål**: Samler launch-filer og konfigurasjon for å starte MoonMapper-roboten i simulering, med valgfritt teleop/estimering/SLAM og RViz.
 
 ### Innhold (fil for fil)
 
@@ -147,7 +111,6 @@ YAML brukes nesten alltid til **parameter-konfig** for ROS 2 noder og stacks:
 - **`moonmapper_webots`**: Webots launcher/driver (inkluderes i `sim.launch.py`).
 - **`moonmapper_control`**: teleop-node (`teleop_keyboard`).
 - **`moonmapper_localization`**: peker til EKF-konfig (`config/ekf.yaml`).
-- **`moonmapper_navigation`**: Nav2 launch (inkluderes valgfritt).
 - **`moonmapper_slam`**: SLAM launch (inkluderes valgfritt).
 - **`robot_state_publisher`**: publiserer TF fra URDF.
 - **`robot_localization`**: `ekf_node`.
@@ -165,7 +128,7 @@ YAML brukes nesten alltid til **parameter-konfig** for ROS 2 noder og stacks:
   - `config/moonmapper_rviz.rviz`
 - `package.xml`
 
-`setup.cfg` styrer hvor “scripts” installeres, men denne pakka har ingen `console_scripts`.
+`setup.cfg` styrer hvor “scripts” installeres. `setup.py` definerer `console_scripts` (f.eks. `camera_aliases`, `cmd_vel_odom_relay`, UWB-noder).
 
 #### `launch/sim.launch.py` – Webots sim bringup
 
@@ -181,7 +144,6 @@ YAML brukes nesten alltid til **parameter-konfig** for ROS 2 noder og stacks:
 - **Teleop**: `moonmapper_control/teleop_keyboard`
 - **EKF**: `robot_localization/ekf_node` med params fra `moonmapper_localization/config/ekf.yaml`
 - **SLAM**: inkluderer `moonmapper_slam/launch/slam.launch.py`
-- **Nav2**: inkluderer `moonmapper_navigation/launch/nav2.launch.py`
 - **RViz2**: med config `config/moonmapper_rviz.rviz`
 
 **Launch-argumenter** (med default):
@@ -191,7 +153,6 @@ YAML brukes nesten alltid til **parameter-konfig** for ROS 2 noder og stacks:
 - `ekf_publish_tf:=true|false` (default `true`)
   - Brukes for å unngå dobbelt-publisering av TF `odom -> base_link` hvis simulering/driver allerede gjør det.
 - `use_slam:=true|false` (default `false`)
-- `use_nav2:=true|false` (default `false`)
 - `use_sim_time:=true|false` (default `true`)
 
 **Kjøring**:
@@ -253,7 +214,7 @@ ros2 launch moonmapper_bringup sensor_bringup.launch.py world:=/abs/path/to/worl
 - **Webots-sim**: `moonmapper_bringup/sim.launch.py`
   - Webots + driver
   - TF via `robot_state_publisher`
-  - (valgfritt) teleop, EKF, SLAM, Nav2, RViz
+  - (valgfritt) teleop, EKF, SLAM, RViz
 - **Gazebo sensor bringup**: `moonmapper_bringup/sensor_bringup.launch.py`
   - “Wrapper” som peker til `moonmapper_description` sin Gazebo-launch
 
@@ -273,7 +234,7 @@ I denne repo-versjonen finnes bl.a. disse jointene i `moonmapper_description/urd
 
 **Merk**:
 - `hengsel_diff_L_joint` / `hengsel_diff_R_joint` finnes **ikke** i denne Xacroen.
-- Derfor er “hinge joints” gjort **valgfrie** i både RViz-kinematikk-noden og Gazebo-pluginen (default tom streng = ignorert).
+- Derfor er “hinge joints” gjort **valgfrie** i Gazebo-pluginen (default tom streng = ignorert).
 
 ### `config/jsp_drivers_only.yaml` – “drivers only” i joint_state_publisher_gui
 
@@ -281,34 +242,7 @@ I denne repo-versjonen finnes bl.a. disse jointene i `moonmapper_description/urd
 
 **Hva den gjør**:
 - Lar kun `rocker_left_joint` og `rocker_right_joint` være manipulerbare slidere.
-- Markerer `bogie_left_joint`, `bogie_right_joint` og `rocker_bogie_diff_joint` som `dependent_joints` slik at GUI ikke rendrer sliders for dem.
-
-### `launch/view_robot_with_diff.launch.py` – RViz/GUI visualisering med kinematikk
-
-Denne launch-fila setter opp en ren visualiserings-pipeline:
-- `joint_state_publisher_gui` publiserer til `/joint_states_raw` (via remap)
-- `rocker_bogie_kinematics` fyller inn/overskriver avhengige joints og publiserer `/joint_states`
-- `robot_state_publisher` lager TF fra `/joint_states`
-- `rviz2` viser modellen
-
-### `launch/rocker_diff_joint.py` – `rocker_bogie_kinematics` (ROS 2 node)
-
-**Rolle**: ROS 2 node som gjør kinematisk kobling for RViz ved å gjøre `/joint_states_raw` om til en komplett `/joint_states`.
-
-**Input/Output**:
-- Input: `input_topic` (default `/joint_states_raw`)
-- Output: `output_topic` (default `/joint_states`)
-
-**Hva den regner ut**:
-- Diff-ledd: \(q_{diff} = k_{diff\_L} L + k_{diff\_R} R + k_{diff\_0}\)
-- Bogie-ledd: \(q_{bogie} = a\cdot rocker + b\cdot q_{diff} + c\)
-- Hengsel-ledd (valgfritt): \(q_{hinge} = d\cdot rocker + e\)
-
-**Joint-navn (defaults)**:
-- rockere: `rocker_left_joint`, `rocker_right_joint`
-- bogies: `bogie_left_joint`, `bogie_right_joint`
-- diff: `rocker_bogie_diff_joint`
-- hengsler: `""` (disabled) med mindre de settes via launch
+- Markerer `bogie_left_joint`, `bogie_right_joint` og `rocker_bogie_diff_joint` som `dependent_joints` slik at GUI ikke rendrer sliders for dem når du bruker `joint_state_publisher_gui` med denne fila.
 
 ### `gz_plugins/src/RockerBogieDifferential.cc` – Gazebo system-plugin (fysikk)
 

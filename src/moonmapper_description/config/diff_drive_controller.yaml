@@ -1,0 +1,51 @@
+diff_drive_controller:
+  ros__parameters:
+    type: diff_drive_controller/DiffDriveController
+    use_sim_time: true
+
+    # TF: odom -> base_footprint (her). URDF: base_footprint -> base_link med z ~0,124 m (hjulplan).
+    # Nav2/RTAB bruker base_link; ventescript og costmaps forventer odom -> base_link.
+
+    left_wheel_names:  ["wheel_l1_joint", "wheel_l2_joint", "wheel_l3_joint"]
+    right_wheel_names: ["wheel_r1_joint", "wheel_r2_joint", "wheel_r3_joint"]
+
+    # Hjulradius 0,045 m (målt). wheel_separation = |Y_l1 − Y_r1| i base_link ved nøytral pose
+    # (rocker_joint Y + wheel_l1/r1 joint Y; se moonmapper_rover.urdf.xacro).
+    wheel_separation: 0.210729
+    wheel_radius:     0.045
+    # Ved lineær fart v_lin (m/s) forventes omtrent |omega| ≈ |v_lin|/wheel_radius på hjul-ledd
+    # (f.eks. 0.08/0.045 ≈ 1.78 rad/s; slip og begrensninger kan avvike).
+    wheel_separation_multiplier: 1.0
+    left_wheel_radius_multiplier:  1.0
+    right_wheel_radius_multiplier: 1.0
+
+    publish_rate: 50.0
+    odom_frame_id: odom
+    base_frame_id: base_footprint
+    enable_odom_tf: true
+
+    cmd_vel_timeout: 0.5
+    # Jazzy diff_drive_controller eksponerer ikke ``open_loop`` her; eventuell
+    # open-loop-test styres via controller_manager / hardware, ikke denne YAML-en.
+
+    publish_limited_velocity: true
+    # NB: Jazzy (ros2_controllers v4.x) sin diff_drive_controller har fjernet
+    # parameteret ``use_stamped_vel`` og abonnerer alltid paa TwistStamped paa
+    # /diff_drive_controller/cmd_vel. Adapter-noden cmd_vel_odom_relay i
+    # moonmapper_bringup konverterer Twist (rover-konvensjon paa /cmd_vel) til
+    # TwistStamped paa veien inn til controller-en.
+
+    # Velocity-limiter rover-en til trygg sim-fart. Akselerasjons-rampene gir
+    # MPPI/Nav2 og det passive rocker-bogie-oppsettet tid til a stabilisere seg
+    # (lave verdier her demper "rystingen" i diff-staven og rocker-tap-leddet).
+    linear.x.has_velocity_limits:  true
+    linear.x.max_velocity:  0.25
+    linear.x.min_velocity: -0.25
+    linear.x.has_acceleration_limits: true
+    linear.x.max_acceleration: 0.4
+
+    angular.z.has_velocity_limits: true
+    angular.z.max_velocity:  1.0
+    angular.z.min_velocity: -1.0
+    angular.z.has_acceleration_limits: true
+    angular.z.max_acceleration: 1.5

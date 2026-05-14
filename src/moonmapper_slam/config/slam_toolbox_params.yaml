@@ -1,5 +1,9 @@
 # slam_toolbox params for MoonMapper (online async SLAM)
 # Used when use_slam:=true in sim.launch.py
+#
+# ARKIVERT BACKUP. Hovedstacken matcher den fysiske rover-en (RTAB-Map +
+# SLAM-toolbox (kart i /map nar du kjorer slam.launch.py).
+# Denne filen beholdes som alternativ 2D-laser-pipeline.
 
 slam_toolbox:
   ros__parameters:

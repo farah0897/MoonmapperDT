@@ -1,4 +1,6 @@
-# robot_localization EKF config for MoonMapper rover (sim)
+# robot_localization EKF — legacy Webots / sim.launch.py (odom0: /odom).
+# Gazebo med ros2_control: bruk moonmapper_bringup/config/ekf_wheel_odom.yaml
+# via gazebo_rover.launch.py use_ekf:=true (inndata /diff_drive_controller/odom).
 # Fuses /odom and optionally /imu. Enable via use_ekf:=true in bringup.
 
 ekf_filter_node:

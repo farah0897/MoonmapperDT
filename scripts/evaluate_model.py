@@ -1,5 +1,12 @@
 """
-Evaluate a trained model on `ml/datasets/processed/test.csv`.
+Evaluer en trent modell på testsett (standard: ml/datasets/processed/test.csv).
+
+Dette scriptet er en tynn wrapper rundt ml.training.evaluate_model som setter
+vanlige standardstier i prosjektet. Alle CLI-flagg derfra kan fortsatt brukes.
+
+Bruk:
+  python3 scripts/evaluate_model.py
+  python3 scripts/evaluate_model.py --help
 """
 
 from __future__ import annotations
@@ -17,8 +24,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         argv = list(sys.argv[1:])
 
     def _has(flag: str) -> bool:
+        # Sjekk om brukeren allerede satte flagget (inkl. --flag=verdi).
         return any(a == flag or a.startswith(flag + "=") for a in argv)
 
+    # Legg til prosjektstandarder bare når de ikke er eksplisitt gitt.
     if not _has("--model_path"):
         argv.extend(["--model_path", "ml/models/random_forest.joblib"])
     if not _has("--encoder_path"):
@@ -30,6 +39,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     old_argv = sys.argv[:]
     try:
+        # Underliggende main() bruker argparse uten argv → leser sys.argv.
         sys.argv = [old_argv[0], *argv]
         return int(impl_main())
     finally:
