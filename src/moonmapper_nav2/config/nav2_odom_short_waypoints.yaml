@@ -1,0 +1,33 @@
+# Short square in odom (robot starts at origin; +X forward typical for diff_drive).
+# If the robot drives the wrong way vs RViz, verify cmd_vel / odom sign (see moonmapper_nav2 README).
+nav2_odom_mission_client:
+  ros__parameters:
+    use_sim_time: true
+    mission_frame: odom
+    frame_id: odom
+    autostart: true
+    loop: false
+    start_delay_sec: 2.0
+    goal_timeout_sec: 0.0
+    wait_for_localization_tf: true
+    retry_start_delay_sec: 1.5
+    reject_retry_sec: 2.0
+    max_reject_retries: 0
+    action_name: "/navigate_through_poses"
+    map_yaml_path: ""
+    require_map_bounds: false
+    require_robot_in_safe_before_send: false
+    abort_if_robot_leaves_safe: false
+    waypoints:
+      - 1.0
+      - 0.0
+      - 0.0
+      - 1.0
+      - -0.8
+      - -1.5708
+      - 0.0
+      - -0.8
+      - 3.1416
+      - 0.0
+      - 0.0
+      - 1.5708

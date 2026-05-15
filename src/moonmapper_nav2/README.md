@@ -174,7 +174,14 @@ ros2 run moonmapper_nav2 nav2_mission_health_check.sh
 | `moonmapper_nav2/nav2_mission_client_node.py` | Action-klient: `NavigateThroughPoses`. |
 | `scripts/nav2_mission_client_node` | Tynn kjørbar (kaller `main()`). |
 | `launch/nav2_localization_test.launch.py` | `localization_launch.py` (map_server + AMCL) + valgfri RViz. |
-| `launch/nav2_bringup_test.launch.py` | `depth_to_scan` + full `bringup_launch.py` + `safety_obstacle_node`. |
+| `launch/nav2_static_map.launch.py` | **Anbefalt demo:** statisk kart + `localization_mode:=odom` (standard) eller `amcl`. |
+| `launch/nav2_odom_static_map.launch.py` | Odom-modus: identity `map`→`odom`, `map_server`, ingen AMCL, ingen 2D Pose Estimate. |
+| `launch/nav2_amcl_static_map.launch.py` | AMCL-modus: auto `initial_x/y/yaw` (match Gazebo `spawn_x/y`). |
+| `launch/nav2_static_map_mission_test.launch.py` | `nav2_static_map` + kort `NavigateThroughPoses`-misjon. |
+| `config/nav2_params_odom_static_map.yaml` | Nav2-parametre for odom static-map. |
+| `config/nav2_params_amcl_static_map.yaml` | Som over + AMCL `set_initial_pose`. |
+| `scripts/nav2_localization_diagnose.sh` | Lifecycle, TF, costmap, cmd_vel (bruk `odom` eller `amcl` som arg). |
+| `launch/nav2_bringup_test.launch.py` | Eldre test: AMCL + full bringup (krever ofte 2D Pose Estimate). |
 | `launch/nav2_coverage_mission_test.launch.py` | Baseline bringup + misjonsnode; logger **resolved** `map_file` / `params_file` / `waypoints_file`. |
 | `launch/nav2_short_mission_test.launch.py` | Kort test: **mission_fast** + **short** waypoints som standard. |
 | `rviz/moonmapper_nav2.rviz` | RViz (utgangspunkt: Jazzy `nav2_default_view.rviz`). |
@@ -194,11 +201,48 @@ source install/setup.bash
 
 ## Test Nav2 (kun denne stacken)
 
+### Statisk kart — odom-modus (standard demo, ingen 2D Pose Estimate)
+
 **Terminal 1 — Gazebo**
 
 ```bash
 ros2 launch moonmapper_bringup sim_rover_clean.launch.py
 ```
+
+**Terminal 2 — Nav2 static map (identity map→odom)**
+
+```bash
+source install/setup.bash
+ros2 launch moonmapper_nav2 nav2_static_map.launch.py
+# eller eksplisitt:
+ros2 launch moonmapper_nav2 nav2_odom_static_map.launch.py
+```
+
+RViz: Fixed Frame **map**, bruk **Nav2 Goal** (ikke 2D Pose Estimate). Diagnose:
+
+```bash
+ros2 run moonmapper_nav2 nav2_localization_diagnose.sh odom
+```
+
+**Automatisk kort misjon**
+
+```bash
+ros2 launch moonmapper_nav2 nav2_static_map_mission_test.launch.py
+```
+
+### Statisk kart — AMCL-modus (eksperimentell)
+
+```bash
+ros2 launch moonmapper_nav2 nav2_static_map.launch.py localization_mode:=amcl \
+  initial_x:=0.0 initial_y:=0.0 initial_yaw:=0.0
+ros2 run moonmapper_nav2 nav2_localization_diagnose.sh amcl
+```
+
+Match `initial_x/y/yaw` til Gazebo-spawn.
+
+### Eldre baseline (AMCL + manuell pose)
+
+**Terminal 1 — Gazebo** (som over)
 
 **Terminal 2 — Nav2 + safety (baseline)**
 

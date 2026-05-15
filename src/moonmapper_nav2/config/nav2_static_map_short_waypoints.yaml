@@ -1,0 +1,33 @@
+# Short mission for nav2_static_map_mission_test (odom localization, no 2D Pose Estimate).
+nav2_mission_client_node:
+  ros__parameters:
+    use_sim_time: true
+    frame_id: map
+    mission_frame: map
+    localization_mode: odom
+    autostart: true
+    loop: false
+    start_delay_sec: 3.0
+    goal_timeout_sec: 0.0
+    wait_for_localization_tf: true
+    localization_tf_stable_count: 3
+    retry_start_delay_sec: 2.0
+    action_name: "/navigate_through_poses"
+    map_margin_m: 1.05
+    require_map_bounds: true
+    waypoints:
+      - -1.0
+      - -0.95
+      - 3.1416
+      - -3.5
+      - -0.95
+      - 3.1416
+      - -3.5
+      - -1.25
+      - -1.5708
+      - -1.0
+      - -1.25
+      - 0.0
+      - -1.0
+      - -0.95
+      - 1.5708

@@ -1,0 +1,20 @@
+waypoints:
+  - name: "start_area"
+    x: -1.0
+    y: 0.0
+    yaw: 3.1416
+
+  - name: "left_side"
+    x: -3.0
+    y: -0.5
+    yaw: 3.1416
+
+  - name: "right_side"
+    x: -3.0
+    y: 0.7
+    yaw: 3.1416
+
+  - name: "return"
+    x: -1.0
+    y: 0.0
+    yaw: 0.0

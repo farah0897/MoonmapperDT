@@ -1,0 +1,38 @@
+# Longer coverage-style route (still inside safe inner region for padded map).
+nav2_mission_client_node:
+  ros__parameters:
+    use_sim_time: true
+    frame_id: map
+    autostart: true
+    loop: false
+    start_delay_sec: 2.0
+    goal_timeout_sec: 0.0
+    wait_for_localization_tf: true
+    retry_start_delay_sec: 1.5
+    reject_retry_sec: 2.0
+    max_reject_retries: 0
+    action_name: "/navigate_through_poses"
+    map_margin_m: 1.05
+    require_map_bounds: true
+    waypoints:
+      - -1.0
+      - -0.95
+      - 3.1416
+      - -3.5
+      - -0.95
+      - 3.1416
+      - -3.5
+      - -1.25
+      - -1.5708
+      - -1.8
+      - -1.25
+      - 3.1416
+      - -1.8
+      - -0.95
+      - 1.5708
+      - -1.0
+      - -0.95
+      - 0.0
+      - -1.0
+      - -0.95
+      - 1.5708
