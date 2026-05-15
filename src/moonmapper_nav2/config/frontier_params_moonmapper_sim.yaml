@@ -1,0 +1,9 @@
+frontier_explorer:
+  ros__parameters:
+    use_sim_time: true
+    map_topic: /map
+    robot_base_frame: base_footprint
+    goal_preemption_min_interval_s: 5.0
+    goal_preemption_complete_if_within_m: 0.25
+    min_frontier_size_cells: 5
+    strategy: mrtsp

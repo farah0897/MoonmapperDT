@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<!-- Static block for Nav2 replan test (spawned at runtime, not in moon_arena.sdf). -->
+<sdf version="1.11">
+  <model name="replan_test_block">
+    <static>true</static>
+    <link name="link">
+      <collision name="collision">
+        <geometry>
+          <box>
+            <size>0.18 0.55 0.50</size>
+          </box>
+        </geometry>
+      </collision>
+      <visual name="visual">
+        <geometry>
+          <box>
+            <size>0.18 0.55 0.50</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.55 0.28 0.10 1</ambient>
+          <diffuse>0.75 0.38 0.12 1</diffuse>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>

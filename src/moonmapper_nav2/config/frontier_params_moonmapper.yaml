@@ -1,0 +1,11 @@
+# frontier_exploration_ros2 — MoonMapper real-robot exploration (Phase 3).
+# Requires: ros2 pkg prefix frontier_exploration_ros2
+frontier_explorer:
+  ros__parameters:
+    use_sim_time: false
+    map_topic: /map
+    robot_base_frame: base_link
+    goal_preemption_min_interval_s: 5.0
+    goal_preemption_complete_if_within_m: 0.25
+    min_frontier_size_cells: 5
+    strategy: mrtsp

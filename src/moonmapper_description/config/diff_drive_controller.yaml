@@ -8,9 +8,9 @@ diff_drive_controller:
     left_wheel_names:  ["wheel_l1_joint", "wheel_l2_joint", "wheel_l3_joint"]
     right_wheel_names: ["wheel_r1_joint", "wheel_r2_joint", "wheel_r3_joint"]
 
-    # wheel_separation = |Y_wheel_l1 − Y_wheel_r1| i base_link ved nøytral rocker (0).
-    # Hjulradius 0,045 m (sylinder i URDF / målt).
-    wheel_separation: 0.210729
+    # wheel_separation = snitt av |Y_left − Y_right| for l1/r1, l2/r2, l3/r3 i base_link
+    # (nøytral rocker/bogie, 0). Ikke halv sporvidde. Hjulradius 0,045 m.
+    wheel_separation: 0.217112
     wheel_radius:     0.045
     # Ved lineær fart v_lin (m/s) forventes omtrent |omega| ≈ |v_lin|/wheel_radius på hjul-ledd
     # (f.eks. 0.08/0.045 ≈ 1.78 rad/s; slip og begrensninger kan avvike).
@@ -22,6 +22,8 @@ diff_drive_controller:
     odom_frame_id: odom
     base_frame_id: base_footprint
     enable_odom_tf: true
+    # Publiserer /diff_drive_controller/odom + TF odom->base_footprint.
+    # Sim speiler til /odom via topic_tools relay (ingen integrator/fake odom).
 
     cmd_vel_timeout: 0.5
     # Jazzy diff_drive_controller eksponerer ikke ``open_loop`` her; eventuell

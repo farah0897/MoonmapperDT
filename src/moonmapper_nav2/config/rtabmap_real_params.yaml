@@ -1,0 +1,20 @@
+# Reference for rtabmap.launch.py (real robot). Values are passed in launch/rtabmap_real.launch.py.
+# Delete ~/.ros/rtabmap.db before a fresh mapping session if you need a clean map.
+
+rtabmap_launch:
+  rgb_topic: /camera/camera/color/image_raw
+  depth_topic: /camera/camera/depth/image_rect_raw
+  camera_info_topic: /camera/camera/color/camera_info
+  frame_id: base_link
+  odom_frame_id: odom
+  approx_sync: true
+  visual_odometry: false
+  icp_odometry: false
+  map_always_update: true
+  rviz: false
+  rtabmap_args:
+    - Odom/MinInliers:=3
+    - Vis/MinInliers:=3
+    - Odom/ResetCountdown:=1
+    - Rtabmap/LoopThr:=0.5
+    - Mem/NotLinkedNodesKept:=false

@@ -1,0 +1,5 @@
+#!/usr/bin/env python3
+from moonmapper_nav2.sim_6wd_physics_diagnose import main
+
+if __name__ == "__main__":
+    raise SystemExit(main())

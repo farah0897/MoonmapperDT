@@ -178,7 +178,15 @@ ros2 run moonmapper_nav2 nav2_mission_health_check.sh
 | `launch/nav2_odom_static_map.launch.py` | Odom-modus: identity `map`→`odom`, `map_server`, ingen AMCL, ingen 2D Pose Estimate. |
 | `launch/nav2_amcl_static_map.launch.py` | AMCL-modus: auto `initial_x/y/yaw` (match Gazebo `spawn_x/y`). |
 | `launch/nav2_static_map_mission_test.launch.py` | `nav2_static_map` + kort `NavigateThroughPoses`-misjon. |
-| `config/nav2_params_odom_static_map.yaml` | Nav2-parametre for odom static-map. |
+| `config/nav2_params_odom_static_map.yaml` | Nav2-parametre for odom static-map (baseline hastighet + goal checker). |
+| `docs/NAV2_STATIC_MAP_ODOM_BASELINE_TEST.md` | Repeterbar manuell testprosedyre for odom baseline. |
+| `docs/NAV2_STATIC_MAP_REPLAN_TEST.md` | Steg 4: replan rundt Gazebo-hindring. |
+| `launch/nav2_static_map_replan_test.launch.py` | `nav2_static_map` + spawn blokk + `nav2_replan_monitor`. |
+| `launch/nav2_rtabmap_exploration.launch.py` | Real robot: RTAB + relay + Nav2 (phased). |
+| `launch/nav2_rtabmap_navigation.launch.py` | Nav2 on live `/map` only. |
+| `config/nav2_params_rtabmap_real.yaml` | Nav2 for RTAB (`base_link`, no map_server). |
+| `docs/NAV2_RTABMAP_EXPLORATION.md` | Real-robot RTAB + Nav2 procedure. |
+| `scripts/nav2_rtabmap_diagnose.sh` | TF/topics checklist for RTAB mode. |
 | `config/nav2_params_amcl_static_map.yaml` | Som over + AMCL `set_initial_pose`. |
 | `scripts/nav2_localization_diagnose.sh` | Lifecycle, TF, costmap, cmd_vel (bruk `odom` eller `amcl` som arg). |
 | `launch/nav2_bringup_test.launch.py` | Eldre test: AMCL + full bringup (krever ofte 2D Pose Estimate). |
@@ -201,7 +209,12 @@ source install/setup.bash
 
 ## Test Nav2 (kun denne stacken)
 
-### Statisk kart — odom-modus (standard demo, ingen 2D Pose Estimate)
+### Nav2 static map odom baseline test (anbefalt demo)
+
+Fullstendig sjekkliste, suksesskriterier og trygge testmål:
+**[docs/NAV2_STATIC_MAP_ODOM_BASELINE_TEST.md](docs/NAV2_STATIC_MAP_ODOM_BASELINE_TEST.md)**
+
+Kortversjon:
 
 **Terminal 1 — Gazebo**
 
@@ -209,19 +222,47 @@ source install/setup.bash
 ros2 launch moonmapper_bringup sim_rover_clean.launch.py
 ```
 
-**Terminal 2 — Nav2 static map (identity map→odom)**
+**Terminal 2 — Nav2 static map (`localization_mode:=odom`, standard)**
 
 ```bash
 source install/setup.bash
 ros2 launch moonmapper_nav2 nav2_static_map.launch.py
-# eller eksplisitt:
-ros2 launch moonmapper_nav2 nav2_odom_static_map.launch.py
 ```
 
-RViz: Fixed Frame **map**, bruk **Nav2 Goal** (ikke 2D Pose Estimate). Diagnose:
+**Terminal 3 — valgfri diagnose**
 
 ```bash
 ros2 run moonmapper_nav2 nav2_localization_diagnose.sh odom
+```
+
+RViz: Fixed Frame **map**, bruk **Nav2 Goal** — **ikke** 2D Pose Estimate.
+
+Anbefalte mål (map): `(1.5, 0.0)`, `(1.5, -0.8)`, `(0.2, -1.2)`.
+
+Parametre: `nav2_params_odom_static_map.yaml` — `xy_goal_tolerance` 0.10, MPPI `vx_max` 0.30, `velocity_smoother` max `[0.30, 0, 0.90]`.
+
+Ved shutdown kan RViz gi GLSL/exit `-6`; det påvirker ikke Nav2 mens testen kjører (se test-doc).
+
+### RTAB-Map live navigation (real robot)
+
+**Does not replace** `nav2_static_map` sim baseline. See **[docs/NAV2_RTABMAP_EXPLORATION.md](docs/NAV2_RTABMAP_EXPLORATION.md)**.
+
+```bash
+# Terminal 1: python3 ~/robot.py
+# Terminal 2:
+ros2 launch moonmapper_bringup real_robot_navigation.launch.py
+ros2 run moonmapper_nav2 nav2_rtabmap_diagnose.sh
+```
+
+Phase 2: `enable_initial_spin:=true` · Phase 3: `enable_frontier_explorer:=true`
+
+### Steg 4 — replan rundt hindring
+
+Se **[docs/NAV2_STATIC_MAP_REPLAN_TEST.md](docs/NAV2_STATIC_MAP_REPLAN_TEST.md)**.
+
+```bash
+# T1: sim  |  T2:
+ros2 launch moonmapper_nav2 nav2_static_map_replan_test.launch.py
 ```
 
 **Automatisk kort misjon**

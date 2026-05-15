@@ -4,12 +4,15 @@
 from __future__ import annotations
 
 import math
+import sys
 
 import rclpy
 import tf2_ros
 from geometry_msgs.msg import TransformStamped
 from rclpy.duration import Duration
 from rclpy.node import Node
+
+from moonmapper_nav2.rclpy_shutdown import is_shutdown_exception, safe_shutdown
 from rclpy.time import Time
 
 
@@ -48,6 +51,8 @@ class TfChainLoggerNode(Node):
             return f"MISSING ({ex})"
 
     def _log_chain(self) -> None:
+        if not rclpy.ok():
+            return
         map_odom = self._lookup("map", "odom")
         odom_base = self._lookup("odom", self._base)
         map_base = self._lookup("map", self._base)
@@ -56,17 +61,26 @@ class TfChainLoggerNode(Node):
         self.get_logger().info(f"TF map->{self._base}: {map_base}")
 
 
-def main() -> None:
+def main() -> int:
     rclpy.init()
-    node = TfChainLoggerNode()
+    node: TfChainLoggerNode | None = None
     try:
+        node = TfChainLoggerNode()
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
+    except Exception as exc:
+        if not is_shutdown_exception(exc):
+            raise
     finally:
-        node.destroy_node()
-        rclpy.shutdown()
+        if node is not None:
+            try:
+                node.destroy_node()
+            except Exception:
+                pass
+        safe_shutdown()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

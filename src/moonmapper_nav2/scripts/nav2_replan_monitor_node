@@ -1,0 +1,7 @@
+#!/usr/bin/env python3
+from moonmapper_nav2.nav2_replan_monitor_node import main
+
+if __name__ == "__main__":
+    import sys
+
+    sys.exit(main())

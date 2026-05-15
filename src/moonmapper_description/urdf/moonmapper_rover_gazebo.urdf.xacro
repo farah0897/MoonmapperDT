@@ -6,26 +6,49 @@
   <xacro:arg name="rocker_diff_coupling_mode" default="weak"/>
   <xacro:arg name="rocker_diff_debug" default="false"/>
   <xacro:arg name="rocker_diff_print_interval" default="0.5"/>
+  <!-- Friksjon/kontakt (overstyres av launch physics_profile). -->
+  <xacro:arg name="wheel_mu1" default="0.12"/>
+  <xacro:arg name="wheel_mu2" default="2.35"/>
+  <xacro:arg name="wheel_kp" default="9000.0"/>
+  <xacro:arg name="wheel_kd" default="55.0"/>
+  <xacro:arg name="wheel_use_fdir1" default="true"/>
   <!-- Grunnmodell: samme fil som RViz bruker (use_gazebo fra launch, typ. true) -->
   <xacro:include filename="$(find moonmapper_description)/urdf/moonmapper_rover.urdf.xacro"/>
-  <!-- Kontakt/friksjons-parametere for hjul. Hjul-link inkl. slatt motor-masse m~0,11 kg; base ~0,9 kg — moderate mu og avstemt kp/kd. -->
-  <xacro:property name="wheel_mu1" value="1.35"/>
-  <xacro:property name="wheel_mu2" value="1.15"/>
-  <!-- ODE bruker kp/kd for kontakt. Tyngre rover: litt lavere kp og avstemt kd gir stabil hjul-kontakt og rocker-bogie-artikulasjon. -->
-  <xacro:property name="wheel_kp" value="12000.0"/>
-  <xacro:property name="wheel_kd" value="40.0"/>
-  <!-- Macro: kontakt-/friksjons-parametere for hjul-link -->
+  <!-- Macro: kontakt-/friksjons-parametere for hjul-link (akse Y = rulling, mu2 = tverrgrep). -->
   <xacro:macro name="wheel_gazebo" params="link">
     <gazebo reference="${link}">
-      <mu1>${wheel_mu1}</mu1>
-      <mu2>${wheel_mu2}</mu2>
-      <kp>${wheel_kp}</kp>
-      <kd>${wheel_kd}</kd>
+      <mu1>$(arg wheel_mu1)</mu1>
+      <mu2>$(arg wheel_mu2)</mu2>
+      <kp>$(arg wheel_kp)</kp>
+      <kd>$(arg wheel_kd)</kd>
       <minDepth>0.0005</minDepth>
-      <!-- Ikke klipp kontakt-korrigering for lavt; 0.5 m/s ga ofte «fast» hjul med bullet. -->
       <maxVel>25.0</maxVel>
-      <!-- Ingen fdir1: anisotrop friksjon kan motvirke ren rulling rundt Y-akse. -->
+      <xacro:if value="$(arg wheel_use_fdir1)">
+        <fdir1>0 1 0</fdir1>
+      </xacro:if>
       <selfCollide>false</selfCollide>
+      <!-- Gazebo Sim/DART: eksplisitt surface/ode i tillegg til legacy mu1/mu2. -->
+      <surface>
+        <friction>
+          <ode>
+            <mu>$(arg wheel_mu2)</mu>
+            <mu2>$(arg wheel_mu2)</mu2>
+            <slip1>0.0</slip1>
+            <slip2>0.0</slip2>
+            <xacro:if value="$(arg wheel_use_fdir1)">
+              <fdir1>0 1 0</fdir1>
+            </xacro:if>
+          </ode>
+        </friction>
+        <contact>
+          <ode>
+            <kp>$(arg wheel_kp)</kp>
+            <kd>$(arg wheel_kd)</kd>
+            <min_depth>0.0005</min_depth>
+            <max_vel>25.0</max_vel>
+          </ode>
+        </contact>
+      </surface>
     </gazebo>
   </xacro:macro>
   <xacro:wheel_gazebo link="wheel_l1_link"/>

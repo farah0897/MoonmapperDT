@@ -32,6 +32,10 @@
   <exec_depend>rviz2</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>topic_tools</exec_depend>
+  <exec_depend>rtabmap_launch</exec_depend>
+  <exec_depend>rtabmap_ros</exec_depend>
+  <exec_depend>realsense2_camera</exec_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

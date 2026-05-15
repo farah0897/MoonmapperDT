@@ -9,6 +9,11 @@ data_files.append(
         "launch/sim.launch.py",
         "launch/sensor_bringup.launch.py",
         "launch/sim_rover_clean.launch.py",
+        "launch/realsense_d435.launch.py",
+        "launch/camera_static_tf.launch.py",
+        "launch/real_robot_navigation.launch.py",
+        "launch/realsense_d435.launch.py",
+        "launch/camera_static_tf.launch.py",
     ]),
 )
 data_files.append(

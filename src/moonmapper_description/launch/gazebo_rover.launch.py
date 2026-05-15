@@ -32,7 +32,9 @@ Teleop (hjul styres KUN her — ikke /cmd_vel til GZ):
 """
 
 import os
+import xml.etree.ElementTree as ET
 
+import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
@@ -57,6 +59,145 @@ from launch.substitutions import (
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
+
+
+def _load_physics_profiles() -> dict:
+    desc_share = get_package_share_directory("moonmapper_description")
+    path = os.path.join(desc_share, "config", "physics_profiles.yaml")
+    with open(path, encoding="utf-8") as fh:
+        return yaml.safe_load(fh)
+
+
+def _parse_world_sdf(path: str) -> tuple[str, str, str]:
+    """Return (gravity_str, ground_mu, ground_mu2) from an SDF world file."""
+    gravity_s = "(unknown)"
+    mu_s, mu2_s = "(unknown)", "(unknown)"
+    try:
+        tree = ET.parse(path)
+        root = tree.getroot()
+        grav = root.find(".//gravity")
+        if grav is not None and grav.text:
+            gravity_s = grav.text.strip()
+        for friction in root.findall(".//model[@name='ground_plane']//friction"):
+            ode = friction.find("ode")
+            if ode is None:
+                continue
+            mu = ode.find("mu")
+            mu2 = ode.find("mu2")
+            if mu is not None and mu.text:
+                mu_s = mu.text.strip()
+            if mu2 is not None and mu2.text:
+                mu2_s = mu2.text.strip()
+            break
+    except (ET.ParseError, OSError) as exc:
+        gravity_s = f"(parse error: {exc})"
+    return gravity_s, mu_s, mu2_s
+
+
+def _gravity_z_mps2(gravity_s: str) -> float | None:
+    parts = gravity_s.split()
+    if len(parts) >= 3:
+        try:
+            return float(parts[2])
+        except ValueError:
+            pass
+    return None
+
+
+def _resolve_world_preset(context):
+    """world_preset:=moon|earth selects world SDF, world_name, default physics_profile."""
+    preset = (context.launch_configurations.get("world_preset") or "moon").strip().lower()
+    desc_share = get_package_share_directory("moonmapper_description")
+    if preset == "earth":
+        world_path = os.path.join(desc_share, "worlds", "earth_arena.sdf")
+        world_name = "earth_arena"
+        default_profile = "earth_stable_6wd"
+    elif preset == "moon":
+        world_path = os.path.join(desc_share, "worlds", "moon_arena.sdf")
+        world_name = "moon_arena"
+        default_profile = "safe_6wd"
+    else:
+        return [
+            LogInfo(
+                msg=(
+                    f"[gazebo_rover] Unknown world_preset='{preset}' "
+                    "(use moon or earth)"
+                ),
+            ),
+        ]
+    actions = [
+        SetLaunchConfiguration("world", world_path),
+        SetLaunchConfiguration("world_name", world_name),
+    ]
+    profile = (context.launch_configurations.get("physics_profile") or "").strip()
+    if not profile:
+        actions.append(SetLaunchConfiguration("physics_profile", default_profile))
+    return actions
+
+
+def _log_world_physics_summary(context):
+    """Log world file, gravity, friction, and active physics/xacro keys."""
+    world_path = context.launch_configurations.get("world", "")
+    profile = (context.launch_configurations.get("physics_profile") or "").strip()
+    preset = (context.launch_configurations.get("world_preset") or "moon").strip()
+    grav_s, g_mu, g_mu2 = _parse_world_sdf(world_path) if world_path else ("?", "?", "?")
+    gz = _gravity_z_mps2(grav_s)
+    lunar_warn = ""
+    if gz is not None and -2.5 < gz < -0.5:
+        lunar_warn = "  WARNING: lunar-like gravity detected — rotate/arc may slip."
+    wheel_mu1 = context.launch_configurations.get("wheel_mu1", "?")
+    wheel_mu2 = context.launch_configurations.get("wheel_mu2", "?")
+    simple_col = context.launch_configurations.get("simple_collision_debug", "?")
+    spawn_z = context.launch_configurations.get("spawn_z", "?")
+    return [
+        LogInfo(
+            msg=(
+                f"[gazebo_rover] world_preset={preset}  world={world_path}  "
+                f"world_name={context.launch_configurations.get('world_name', '?')}"
+            ),
+        ),
+        LogInfo(
+            msg=(
+                f"[gazebo_rover] gravity={grav_s}  ground_mu={g_mu}  ground_mu2={g_mu2}"
+                f"{lunar_warn}"
+            ),
+        ),
+        LogInfo(
+            msg=(
+                f"[gazebo_rover] physics_profile={profile or '(none)'}  "
+                f"wheel_mu1={wheel_mu1}  wheel_mu2={wheel_mu2}  "
+                f"simple_collision_debug={simple_col}  spawn_z={spawn_z}"
+            ),
+        ),
+    ]
+
+
+def _apply_physics_profile(context):
+    """When physics_profile is set, apply preset launch keys (spawn_z, friction, collisions)."""
+    profile = (context.launch_configurations.get("physics_profile") or "").strip()
+    if not profile:
+        return []
+    profiles = _load_physics_profiles()
+    spec = profiles.get(profile)
+    if spec is None:
+        return [
+            LogInfo(
+                msg=(
+                    f"[gazebo_rover] Unknown physics_profile='{profile}' "
+                    f"(known: {', '.join(sorted(profiles))})"
+                ),
+            ),
+        ]
+    actions = [
+        LogInfo(msg=f"[gazebo_rover] physics_profile={profile}"),
+    ]
+    for key, val in spec.items():
+        if isinstance(val, bool):
+            sval = "true" if val else "false"
+        else:
+            sval = str(val)
+        actions.append(SetLaunchConfiguration(key, sval))
+    return actions
 
 
 def _physics_only_debug(context):
@@ -111,7 +252,8 @@ def _diff_relay_ekf_chain(context, *, load_jsb):
         {
             "frame_id": ParameterValue(relay_frame, value_type=str),
         },
-        {"publish_odom_relay": not use_ekf},
+        # /odom kommer fra topic_tools relay (diff_drive -> /odom), ikke denne noden.
+        {"publish_odom_relay": False},
         {
             "use_smoothed_twist_stamped_input": ParameterValue(
                 LaunchConfiguration("cmd_vel_relay_use_smoothed_twist_stamped"),
@@ -164,7 +306,18 @@ def _diff_relay_ekf_chain(context, *, load_jsb):
         "yes",
     )
 
-    on_exit_after_diff = [cmd_vel_odom_relay]
+    on_exit_after_diff: list = [cmd_vel_odom_relay]
+    if not use_ekf:
+        odom_relay = Node(
+            package="topic_tools",
+            executable="relay",
+            name="diff_drive_odom_relay",
+            output="screen",
+            arguments=["/diff_drive_controller/odom", "/odom"],
+            parameters=[{"use_sim_time": use_sim_time}],
+        )
+        on_exit_after_diff = [odom_relay, cmd_vel_odom_relay]
+
     if use_ekf and builtin_wheel_ekf:
         ekf_node = Node(
             package="robot_localization",
@@ -241,14 +394,23 @@ def generate_launch_description() -> LaunchDescription:
             description="Path til Gazebo-xacro-wrapper.",
         ),
         DeclareLaunchArgument(
+            "world_preset",
+            default_value="moon",
+            description=(
+                "moon → moon_arena.sdf + safe_6wd (default). "
+                "earth → earth_arena.sdf + earth_6wd (unless physics_profile set). "
+                "Overstyrer world/world_name."
+            ),
+        ),
+        DeclareLaunchArgument(
             "world",
             default_value=default_world,
-            description="Path til .sdf-verden.",
+            description="Path til .sdf-verden (overstyres av world_preset).",
         ),
         DeclareLaunchArgument(
             "world_name",
             default_value="moon_arena",
-            description="Gazebo world name (for ros_gz_sim create -world).",
+            description="Gazebo world name (overstyres av world_preset).",
         ),
         DeclareLaunchArgument(
             "gz_sim_verbosity",
@@ -422,9 +584,43 @@ def generate_launch_description() -> LaunchDescription:
             "simple_collision_debug",
             default_value="false",
             description=(
-                "Når true: rocker/bogie/hjul bruker primitive collision (boks/sylinder) i URDF; "
-                "STL-collision av; stereo-kamera uten mesh-collision. Mindre snagging i Gazebo."
+                "Når true: kun hjul har kollisjon (ingen base/rocker/bogie/diff-bar STL); "
+                "anbefalt for 6WD-traksjon i Gazebo. Stereo uten mesh-collision."
             ),
+        ),
+        DeclareLaunchArgument(
+            "physics_profile",
+            default_value="",
+            description=(
+                "Preset: safe_6wd | earth_stable_6wd | earth_6wd | realistic_6wd | debug_low_friction. "
+                "Tom = bruk individuelle args (wheel_mu*, simple_collision_debug, spawn_z, …). "
+                "world_preset setter default: moon→safe_6wd, earth→earth_stable_6wd."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "wheel_mu1",
+            default_value="0.12",
+            description="ODE mu1 (langs fdir1 når wheel_use_fdir1). Overstyres av physics_profile.",
+        ),
+        DeclareLaunchArgument(
+            "wheel_mu2",
+            default_value="2.35",
+            description="ODE mu2 (tverr på hjul). Overstyres av physics_profile.",
+        ),
+        DeclareLaunchArgument(
+            "wheel_kp",
+            default_value="9000.0",
+            description="Hjul kontakt kp. Overstyres av physics_profile.",
+        ),
+        DeclareLaunchArgument(
+            "wheel_kd",
+            default_value="55.0",
+            description="Hjul kontakt kd. Overstyres av physics_profile.",
+        ),
+        DeclareLaunchArgument(
+            "wheel_use_fdir1",
+            default_value="true",
+            description="Anisotrop friksjon: fdir1 langs hjulakse Y. Overstyres av physics_profile.",
         ),
     ]
 
@@ -445,6 +641,16 @@ def generate_launch_description() -> LaunchDescription:
                 LaunchConfiguration("rocker_diff_print_interval"),
                 " simple_collision_debug:=",
                 LaunchConfiguration("simple_collision_debug"),
+                " wheel_mu1:=",
+                LaunchConfiguration("wheel_mu1"),
+                " wheel_mu2:=",
+                LaunchConfiguration("wheel_mu2"),
+                " wheel_kp:=",
+                LaunchConfiguration("wheel_kp"),
+                " wheel_kd:=",
+                LaunchConfiguration("wheel_kd"),
+                " wheel_use_fdir1:=",
+                LaunchConfiguration("wheel_use_fdir1"),
             ],
         ),
         value_type=str,
@@ -633,6 +839,9 @@ def generate_launch_description() -> LaunchDescription:
     return LaunchDescription(
         args
         + [
+            OpaqueFunction(function=_resolve_world_preset),
+            OpaqueFunction(function=_apply_physics_profile),
+            OpaqueFunction(function=_log_world_physics_summary),
             OpaqueFunction(function=_physics_only_debug),
             OpaqueFunction(function=_spawn_z_alias),
             set_ros_domain,

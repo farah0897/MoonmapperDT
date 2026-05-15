@@ -8,7 +8,8 @@ ROS-standard: ``/cmd_vel.linear.x > 0`` = fremover i ``base_footprint`` +X,
                                        Jazzy ros2_controllers v4.x sin
                                        diff_drive_controller utelukkende
                                        abonnerer paa TwistStamped)
-    /diff_drive_controller/odom    -> /odom  (valgfritt; se publish_odom_relay)
+    /odom speiles i sim av topic_tools relay fra /diff_drive_controller/odom
+    (publish_odom_relay her er kun for EKF/legacy).
 
 Alternativ (TwistStamped inn, f.eks. smoothed kommando):
     /cmd_vel_smoothed (TwistStamped) -> /diff_drive_controller/cmd_vel (TwistStamped)
@@ -111,8 +112,7 @@ class CmdVelOdomRelay(Node):
             self.create_subscription(Twist, "/cmd_vel", self._on_cmd_vel, 10)
             self.get_logger().info(
                 f"cmd_vel_odom_relay klar: /cmd_vel (Twist) -> "
-                f"/diff_drive_controller/cmd_vel (TwistStamped, frame_id={self._frame_id}); "
-                f"/diff_drive_controller/odom -> /odom. "
+                f"/diff_drive_controller/cmd_vel (TwistStamped, frame_id={self._frame_id}). "
                 f"cmd_linear_x_sign={self._lin_sign} cmd_angular_z_sign={self._ang_sign}"
             )
 
