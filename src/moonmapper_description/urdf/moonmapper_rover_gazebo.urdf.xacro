@@ -9,8 +9,8 @@
   <!-- Grunnmodell: samme fil som RViz bruker (use_gazebo fra launch, typ. true) -->
   <xacro:include filename="$(find moonmapper_description)/urdf/moonmapper_rover.urdf.xacro"/>
   <!-- Kontakt/friksjons-parametere for hjul. Hjul-link inkl. slatt motor-masse m~0,11 kg; base ~0,9 kg — moderate mu og avstemt kp/kd. -->
-  <xacro:property name="wheel_mu1" value="1.15"/>
-  <xacro:property name="wheel_mu2" value="1.0"/>
+  <xacro:property name="wheel_mu1" value="1.35"/>
+  <xacro:property name="wheel_mu2" value="1.15"/>
   <!-- ODE bruker kp/kd for kontakt. Tyngre rover: litt lavere kp og avstemt kd gir stabil hjul-kontakt og rocker-bogie-artikulasjon. -->
   <xacro:property name="wheel_kp" value="12000.0"/>
   <xacro:property name="wheel_kd" value="40.0"/>

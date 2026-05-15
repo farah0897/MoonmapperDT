@@ -19,18 +19,16 @@
 #   gz_type_name: gz.msgs.Pose_V
 #   direction: GZ_TO_ROS
 
-# cmd_vel gaar vanligvis via diff_drive_controller (ROS 2), men
-# hvis du heller vil drive direkte paa Gazebo's DiffDrive bruker
-# du denne bridge-en.
-- ros_topic_name: /cmd_vel
-  gz_topic_name: /cmd_vel
-  ros_type_name: geometry_msgs/msg/Twist
-  gz_type_name: gz.msgs.Twist
-  direction: ROS_TO_GZ
+# /cmd_vel skal IKKE broes til GZ nar ros2_control + diff_drive styrer hjul-hastighet.
+# En parallell ROS_TO_GZ /cmd_vel-bro konkurrerer med JointVelocityCmd og gir ofte
+# «hjul spinner / kropp snur ikke»-symptomer. Motorvei: /cmd_vel -> cmd_vel_odom_relay
+# -> /diff_drive_controller/cmd_vel -> gz_ros2_control.
 
 # ================================================================
 # Sensorer
 # ================================================================
+
+# /scan kommer fra moonmapper_autonomy/depth_to_scan_node (depth-kamera), ikke GZ lidar.
 
 # IMU (100 Hz)
 - ros_topic_name: /imu/data

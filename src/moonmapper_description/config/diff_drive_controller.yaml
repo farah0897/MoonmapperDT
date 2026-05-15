@@ -8,8 +8,8 @@ diff_drive_controller:
     left_wheel_names:  ["wheel_l1_joint", "wheel_l2_joint", "wheel_l3_joint"]
     right_wheel_names: ["wheel_r1_joint", "wheel_r2_joint", "wheel_r3_joint"]
 
-    # Hjulradius 0,045 m (målt). wheel_separation = |Y_l1 − Y_r1| i base_link ved nøytral pose
-    # (rocker_joint Y + wheel_l1/r1 joint Y; se moonmapper_rover.urdf.xacro).
+    # wheel_separation = |Y_wheel_l1 − Y_wheel_r1| i base_link ved nøytral rocker (0).
+    # Hjulradius 0,045 m (sylinder i URDF / målt).
     wheel_separation: 0.210729
     wheel_radius:     0.045
     # Ved lineær fart v_lin (m/s) forventes omtrent |omega| ≈ |v_lin|/wheel_radius på hjul-ledd
@@ -36,8 +36,8 @@ diff_drive_controller:
 
     # Velocity-limiter for trygg sim-fart. Akselerasjons-rampene demper rykk i rocker-bogie.
     linear.x.has_velocity_limits:  true
-    linear.x.max_velocity:  0.25
-    linear.x.min_velocity: -0.25
+    linear.x.max_velocity:  0.30
+    linear.x.min_velocity: -0.30
     linear.x.has_acceleration_limits: true
     linear.x.max_acceleration: 0.4
 

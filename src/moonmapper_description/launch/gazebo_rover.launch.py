@@ -4,9 +4,14 @@ Kjører:
   * gz sim (server + GUI) med en valgfri verden
   * robot_state_publisher med Gazebo-xacro-wrapperen
   * ros_gz_sim create for å spawne roveren
-  * ros_gz_bridge parameter_bridge for clock/tf/sensorer
+  * ros_gz_bridge parameter_bridge for clock/tf/sensorer (IKKE /cmd_vel til GZ — se ros_gz_bridge.yaml)
   * spawner for joint_state_broadcaster og diff_drive_controller
+  * cmd_vel_odom_relay: /cmd_vel -> /diff_drive_controller/cmd_vel, /diff_drive_controller/odom -> /odom
   * (valgfritt) RViz
+
+Motorvei (én aktiv kjede for hjulfart):
+  /cmd_vel -> cmd_vel_odom_relay -> /diff_drive_controller/cmd_vel (TwistStamped)
+  -> gz_ros2_control -> hjul-hastighetskommandoer -> Gazebo DART-kontakt -> /joint_states + /odom/TF.
 
 Typisk bruk:
 
@@ -23,7 +28,7 @@ Typisk bruk:
 Teleop (hjul styres KUN her — ikke /cmd_vel til GZ):
 
   ros2 run teleop_twist_keyboard teleop_twist_keyboard --ros-args \\
-    -r /cmd_vel:=/diff_drive_controller/cmd_vel -p stamped:=true -p frame_id:=base_link
+    -r /cmd_vel:=/diff_drive_controller/cmd_vel -p stamped:=true -p frame_id:=base_footprint
 """
 
 import os
@@ -100,8 +105,12 @@ def _diff_relay_ekf_chain(context, *, load_jsb):
     )
 
     use_sim_time = LaunchConfiguration("use_sim_time")
+    relay_frame = LaunchConfiguration("cmd_vel_relay_frame_id")
     relay_params = [
         {"use_sim_time": use_sim_time},
+        {
+            "frame_id": ParameterValue(relay_frame, value_type=str),
+        },
         {"publish_odom_relay": not use_ekf},
         {
             "use_smoothed_twist_stamped_input": ParameterValue(
@@ -116,6 +125,24 @@ def _diff_relay_ekf_chain(context, *, load_jsb):
             "publish_twist_cmd_vel_mirror": ParameterValue(
                 LaunchConfiguration("cmd_vel_relay_publish_twist_cmd_vel_mirror"),
                 value_type=bool,
+            ),
+        },
+        {
+            "invert_cmd_vel_twist": ParameterValue(
+                LaunchConfiguration("invert_cmd_vel_twist"),
+                value_type=bool,
+            ),
+        },
+        {
+            "cmd_linear_x_sign": ParameterValue(
+                LaunchConfiguration("cmd_linear_x_sign"),
+                value_type=float,
+            ),
+        },
+        {
+            "cmd_angular_z_sign": ParameterValue(
+                LaunchConfiguration("cmd_angular_z_sign"),
+                value_type=float,
             ),
         },
     ]
@@ -305,6 +332,11 @@ def generate_launch_description() -> LaunchDescription:
             description="Nar use_ekf: om EKF skal publisere TF (odom->base_footprint).",
         ),
         DeclareLaunchArgument(
+            "cmd_vel_relay_frame_id",
+            default_value="base_footprint",
+            description="frame_id i TwistStamped fra cmd_vel_odom_relay til diff_drive.",
+        ),
+        DeclareLaunchArgument(
             "cmd_vel_relay_use_smoothed_twist_stamped",
             default_value="false",
             description=(
@@ -323,6 +355,30 @@ def generate_launch_description() -> LaunchDescription:
             description=(
                 "Nar use_smoothed: true = publiser ogsaa speil-Twist paa /cmd_vel. "
                 "False naar velocity_smoother allerede publiserer til /cmd_vel."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "invert_cmd_vel_twist",
+            default_value="false",
+            description=(
+                "Utgått: True = legacy (neger både linear.x og angular.z inn mot diff_drive, "
+                "overskriver cmd_*_sign). Bruk false og sett cmd_linear_x_sign / cmd_angular_z_sign."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "cmd_linear_x_sign",
+            default_value="1.0",
+            description=(
+                "Skalering inn til diff_drive: out.linear.x = sign * /cmd_vel.linear.x "
+                "(standard 1.0 — bruk -1.0 kun midlertidig dersom URDF/controller fortsatt er speilet)."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "cmd_angular_z_sign",
+            default_value="1.0",
+            description=(
+                "Skalering inn til diff_drive: out.angular.z = sign * /cmd_vel.angular.z "
+                "(typisk 1.0: ikke snu yaw-rate bare fordi linear er invertert)."
             ),
         ),
         DeclareLaunchArgument(

@@ -8,7 +8,7 @@
   <!-- URDF mimic er for RViz. I Gazebo er mimic ofte av; prisme-ledd uten mimic blir ustabile — bruk use_gazebo:=true for fixed push-rod i sim. -->
   <xacro:arg name="enable_urdf_mimic" default="true"/>
   <xacro:arg name="use_gazebo" default="false"/>
-  <!-- Enkle primitiver for rocker/bogie/hjul i stedet for STL (mindre «krok» mot bakken). -->
+  <!-- Enkle primitiver for rocker/bogie i stedet for STL (mindre «krok» mot bakken). Hjul bruker alltid sylinder-kollisjon. -->
   <xacro:arg name="simple_collision_debug" default="false"/>
   <xacro:macro name="rocker_stl_collision" params="mesh_file">
     <collision>
@@ -51,14 +51,8 @@
       </geometry>
     </collision>
   </xacro:macro>
-  <!-- Base footprint: bakkeplan under rover (Nav2/MPPI). Lett rot-node; unngaa null-inertia i Gazebo. -->
-  <link name="base_footprint">
-    <inertial>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <mass value="0.0001"/>
-      <inertia ixx="1e-12" ixy="0" ixz="0" iyy="1e-12" iyz="0" izz="1e-12"/>
-    </inertial>
-  </link>
+  <!-- base_footprint: masseløst root-frame (REP-105). Masse, treghet og chassis-kollisjon ligger på base_link. -->
+  <link name="base_footprint"/>
   <joint name="base_footprint_to_base_link" type="fixed">
     <parent link="base_footprint"/>
     <child link="base_link"/>
@@ -318,12 +312,7 @@
         <color rgba="0.35 0.35 0.35 1.0"/>
       </material>
     </visual>
-    <xacro:if value="$(arg simple_collision_debug)">
-      <xacro:wheel_primitive_collision/>
-    </xacro:if>
-    <xacro:unless value="$(arg simple_collision_debug)">
-      <xacro:rocker_stl_collision mesh_file="wheel_r1_link.stl"/>
-    </xacro:unless>
+    <xacro:wheel_primitive_collision/>
     <inertial>
       <!-- Hjul 0,048 kg + tidl. motor 0,062 kg slatt inn i hjullink (ingen motor_*); sylinder om Y, r=0,045, w=0,039, m=0,11. -->
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -349,12 +338,7 @@
         <color rgba="0.35 0.35 0.35 1.0"/>
       </material>
     </visual>
-    <xacro:if value="$(arg simple_collision_debug)">
-      <xacro:wheel_primitive_collision/>
-    </xacro:if>
-    <xacro:unless value="$(arg simple_collision_debug)">
-      <xacro:rocker_stl_collision mesh_file="wheel_r2_link.stl"/>
-    </xacro:unless>
+    <xacro:wheel_primitive_collision/>
     <inertial>
       <!-- Hjul 0,048 kg + tidl. motor 0,062 kg slatt inn i hjullink (ingen motor_*); sylinder om Y, r=0,045, w=0,039, m=0,11. -->
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -380,12 +364,7 @@
         <color rgba="0.35 0.35 0.35 1.0"/>
       </material>
     </visual>
-    <xacro:if value="$(arg simple_collision_debug)">
-      <xacro:wheel_primitive_collision/>
-    </xacro:if>
-    <xacro:unless value="$(arg simple_collision_debug)">
-      <xacro:rocker_stl_collision mesh_file="wheel_r3_link.stl"/>
-    </xacro:unless>
+    <xacro:wheel_primitive_collision/>
     <inertial>
       <!-- Hjul 0,048 kg + tidl. motor 0,062 kg slatt inn i hjullink (ingen motor_*); sylinder om Y, r=0,045, w=0,039, m=0,11. -->
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -481,12 +460,7 @@
         <color rgba="0.35 0.35 0.35 1.0"/>
       </material>
     </visual>
-    <xacro:if value="$(arg simple_collision_debug)">
-      <xacro:wheel_primitive_collision/>
-    </xacro:if>
-    <xacro:unless value="$(arg simple_collision_debug)">
-      <xacro:rocker_stl_collision mesh_file="wheel_l1_link.stl"/>
-    </xacro:unless>
+    <xacro:wheel_primitive_collision/>
     <inertial>
       <!-- Hjul 0,048 kg + tidl. motor 0,062 kg slatt inn i hjullink (ingen motor_*); sylinder om Y, r=0,045, w=0,039, m=0,11. -->
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -512,12 +486,7 @@
         <color rgba="0.35 0.35 0.35 1.0"/>
       </material>
     </visual>
-    <xacro:if value="$(arg simple_collision_debug)">
-      <xacro:wheel_primitive_collision/>
-    </xacro:if>
-    <xacro:unless value="$(arg simple_collision_debug)">
-      <xacro:rocker_stl_collision mesh_file="wheel_l2_link.stl"/>
-    </xacro:unless>
+    <xacro:wheel_primitive_collision/>
     <inertial>
       <!-- Hjul 0,048 kg + tidl. motor 0,062 kg slatt inn i hjullink (ingen motor_*); sylinder om Y, r=0,045, w=0,039, m=0,11. -->
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -543,12 +512,7 @@
         <color rgba="0.35 0.35 0.35 1.0"/>
       </material>
     </visual>
-    <xacro:if value="$(arg simple_collision_debug)">
-      <xacro:wheel_primitive_collision/>
-    </xacro:if>
-    <xacro:unless value="$(arg simple_collision_debug)">
-      <xacro:rocker_stl_collision mesh_file="wheel_l3_link.stl"/>
-    </xacro:unless>
+    <xacro:wheel_primitive_collision/>
     <inertial>
       <!-- Hjul 0,048 kg + tidl. motor 0,062 kg slatt inn i hjullink (ingen motor_*); sylinder om Y, r=0,045, w=0,039, m=0,11. -->
       <origin xyz="0 0 0" rpy="0 0 0"/>
