@@ -38,7 +38,8 @@ from moonmapper_nav2.frontier_map_debug import (
     sanitize_occ_grid_data,
 )
 from moonmapper_nav2.frontier_grid import (
-    RejectReason,
+    SafeGoalPickConfig,
+    ScoredGoalCandidate,
     ValidatedGoal,
     apply_robot_footprint_clearing,
     bridge_passable_bfs_to_known_free,
@@ -46,12 +47,13 @@ from moonmapper_nav2.frontier_grid import (
     build_passable_mask,
     collect_frontier_clusters,
     count_raw_frontier_cells,
+    format_goal_candidates_log,
     format_reachability_debug_line,
     format_strict_mask_debug,
     global_nearest_free_cell,
     resolve_bfs_seed_and_masks,
     score_cluster_distance,
-    validate_and_build_goal,
+    select_best_frontier_goal,
 )
 from moonmapper_nav2.frontier_utils import world_to_map
 from moonmapper_nav2.rclpy_shutdown import is_shutdown_exception, safe_shutdown
@@ -120,9 +122,11 @@ class FrontierExplorer(Node):
         d(self, "cmd_vel_topic", "/cmd_vel_raw")
         d(self, "exploration_rate_hz", 2.0)
         d(self, "min_frontier_cluster_size", 5)
-        d(self, "min_goal_distance", 0.45)
-        d(self, "max_goal_distance", 5.0)
-        d(self, "max_goal_distance_stage_m", 2.5)
+        d(self, "min_goal_distance", 1.0)
+        d(self, "min_goal_distance_m", 1.0)
+        d(self, "max_goal_distance", 6.0)
+        d(self, "max_goal_distance_m", 6.0)
+        d(self, "max_goal_distance_stage_m", 6.0)
         d(self, "goal_timeout_sec", 120.0)
         d(self, "occupied_threshold", 65)
         d(self, "free_threshold", 0)
@@ -131,7 +135,26 @@ class FrontierExplorer(Node):
         d(self, "goal_inflation_radius_m", 0.15)
         d(self, "bfs_goal_inflation_radius_m", 0.10)
         d(self, "approach_search_radius_min_m", 0.2)
-        d(self, "approach_search_radius_max_m", 1.5)
+        d(self, "approach_search_radius_max_m", 2.0)
+        d(self, "min_obstacle_clearance_m", 0.45)
+        d(self, "min_obstacle_clearance_floor_m", 0.30)
+        d(self, "preferred_obstacle_clearance_m", 0.65)
+        d(self, "min_unknown_clearance_m", 0.10)
+        d(self, "preferred_unknown_clearance_m", 0.25)
+        d(self, "frontier_goal_score_obstacle_weight", 3.0)
+        d(self, "frontier_goal_score_distance_weight", 1.0)
+        d(self, "frontier_goal_score_cluster_weight", 1.5)
+        d(self, "frontier_goal_score_unknown_weight", 1.0)
+        d(self, "min_free_space_around_goal_m", 0.45)
+        d(self, "avoid_corner_goals", True)
+        d(self, "allow_corner_fallback", True)
+        d(self, "corner_penalty", 5.0)
+        d(self, "corner_check_radius_m", 0.5)
+        d(self, "publish_debug_markers", True)
+        d(self, "blacklist_failed_goal_radius_m", 0.75)
+        d(self, "blacklist_failed_cluster", True)
+        d(self, "min_clearance_after_failure_m", 0.55)
+        d(self, "failure_retry_delay_sec", 1.0)
         d(self, "allow_frontier_adjacent_unknown", True)
         d(self, "require_strict_reachability_for_goal", False)
         d(self, "require_passable_for_approach", False)
@@ -189,10 +212,14 @@ class FrontierExplorer(Node):
         self._st = _St.START
         self._map: Optional[OccupancyGrid] = None
         self._blacklist: List[Tuple[float, float, float]] = []
+        self._blacklist_failed: List[Tuple[float, float, float]] = []
+        self._blacklist_clusters: List[Tuple[float, float, float]] = []
+        self._clearance_override_m: Optional[float] = None
         self._send_future: Optional[Future] = None
         self._goal_handle = None
         self._result_future: Optional[Future] = None
         self._last_goal: Optional[Tuple[float, float]] = None
+        self._last_validated_goal: Optional[ValidatedGoal] = None
         self._fail_streak = 0
         self._rescan_count = 0
         self._pending_goal: Optional[Tuple[float, float]] = None
@@ -224,6 +251,11 @@ class FrontierExplorer(Node):
         self._pub_stat = self.create_publisher(String, "/frontier_explorer/status", FRONTIER_TOPIC_QOS)
         self._pub_goal = self.create_publisher(PoseStamped, "/frontier_explorer/current_goal", FRONTIER_TOPIC_QOS)
         self._pub_mk = self.create_publisher(MarkerArray, "/frontier_explorer/markers", 10)
+        self._pub_debug_mk = self.create_publisher(
+            MarkerArray, "/frontier_explorer/debug_markers", 10
+        )
+        self._last_debug_candidates: List[ScoredGoalCandidate] = []
+        self._last_debug_rejected: List[ScoredGoalCandidate] = []
 
         self.create_subscription(
             OccupancyGrid,
@@ -349,16 +381,19 @@ class FrontierExplorer(Node):
                 pass
         self._goal_handle = None
         self._result_future = None
-        self._blacklist_goal()
         self._fail_streak += 1
         self._obstacle_blocked_since = None
-        self._maybe_recover()
+        self._handle_goal_failed(reason)
         self._stat("STUCK_BLOCKED")
 
     def _prune_bl(self) -> None:
         now = time.monotonic()
         to = float(self.get_parameter("blacklist_timeout_sec").value)
         self._blacklist = [(x, y, tt) for x, y, tt in self._blacklist if now - tt < to]
+        self._blacklist_failed = [(x, y, tt) for x, y, tt in self._blacklist_failed if now - tt < to]
+        self._blacklist_clusters = [
+            (x, y, tt) for x, y, tt in self._blacklist_clusters if now - tt < to
+        ]
 
     def _lc_step(self) -> bool:
         if not bool(self.get_parameter("require_nav_lifecycle_active").value):
@@ -440,7 +475,218 @@ class FrontierExplorer(Node):
         for bx, by, _t in self._blacklist:
             if math.hypot(wx - bx, wy - by) < br:
                 return True
+        fbr = float(self.get_parameter("blacklist_failed_goal_radius_m").value)
+        for bx, by, _t in self._blacklist_failed:
+            if math.hypot(wx - bx, wy - by) < fbr:
+                return True
+        for bx, by, _t in self._blacklist_clusters:
+            if math.hypot(wx - bx, wy - by) < br:
+                return True
         return False
+
+    def _safe_goal_config(self) -> SafeGoalPickConfig:
+        return SafeGoalPickConfig(
+            min_goal_dist_m=float(self.get_parameter("min_goal_distance_m").value),
+            max_goal_dist_m=min(
+                float(self.get_parameter("max_goal_distance_m").value),
+                float(self.get_parameter("max_goal_distance_stage_m").value),
+            ),
+            min_obstacle_clearance_m=float(self.get_parameter("min_obstacle_clearance_m").value),
+            min_obstacle_clearance_floor_m=float(
+                self.get_parameter("min_obstacle_clearance_floor_m").value
+            ),
+            preferred_obstacle_clearance_m=float(
+                self.get_parameter("preferred_obstacle_clearance_m").value
+            ),
+            min_unknown_clearance_m=float(self.get_parameter("min_unknown_clearance_m").value),
+            preferred_unknown_clearance_m=float(
+                self.get_parameter("preferred_unknown_clearance_m").value
+            ),
+            approach_radius_min_m=float(self.get_parameter("approach_search_radius_min_m").value),
+            approach_radius_max_m=float(self.get_parameter("approach_search_radius_max_m").value),
+            score_distance_weight=float(
+                self.get_parameter("frontier_goal_score_distance_weight").value
+            ),
+            score_obstacle_weight=float(
+                self.get_parameter("frontier_goal_score_obstacle_weight").value
+            ),
+            score_cluster_weight=float(
+                self.get_parameter("frontier_goal_score_cluster_weight").value
+            ),
+            score_unknown_weight=float(
+                self.get_parameter("frontier_goal_score_unknown_weight").value
+            ),
+            min_free_space_around_goal_m=float(
+                self.get_parameter("min_free_space_around_goal_m").value
+            ),
+            avoid_corner_goals=bool(self.get_parameter("avoid_corner_goals").value),
+            allow_corner_fallback=bool(self.get_parameter("allow_corner_fallback").value),
+            corner_penalty=float(self.get_parameter("corner_penalty").value),
+            corner_check_radius_m=float(self.get_parameter("corner_check_radius_m").value),
+            require_passable_for_approach=bool(
+                self.get_parameter("require_passable_for_approach").value
+            ),
+            neighbor_fallback_m=float(self.get_parameter("frontier_neighbor_fallback_m").value),
+        )
+
+    def _debug_markers(
+        self,
+        clusters,
+        selected: Optional[ValidatedGoal],
+        safe: List[ScoredGoalCandidate],
+        rejected: List[ScoredGoalCandidate],
+    ) -> None:
+        if not bool(self.get_parameter("publish_debug_markers").value) or self._map is None:
+            return
+        info = self._map.info
+        ox = float(info.origin.position.x)
+        oy = float(info.origin.position.y)
+        res = float(info.resolution)
+        frame = str(self.get_parameter("map_frame").value)
+        arr = MarkerArray()
+        now = self.get_clock().now().to_msg()
+        clr = Marker()
+        clr.header.frame_id = frame
+        clr.header.stamp = now
+        clr.ns = "debug"
+        clr.action = Marker.DELETEALL
+        arr.markers.append(clr)
+
+        def _pts_marker(ns: str, mid: int, color: ColorRGBA, scale: float, points) -> Marker:
+            m = Marker()
+            m.header.frame_id = frame
+            m.header.stamp = now
+            m.ns = ns
+            m.id = mid
+            m.type = Marker.POINTS
+            m.action = Marker.ADD
+            m.scale.x = scale
+            m.scale.y = scale
+            m.color = color
+            m.points = points
+            return m
+
+        frontier_pts: List[Point] = []
+        for cl in clusters:
+            for cx, cy in cl.cells:
+                p = Point()
+                p.x = ox + (cx + 0.5) * res
+                p.y = oy + (cy + 0.5) * res
+                p.z = 0.03
+                frontier_pts.append(p)
+        if frontier_pts:
+            arr.markers.append(
+                _pts_marker(
+                    "raw_frontier",
+                    1,
+                    ColorRGBA(r=0.6, g=0.6, b=0.2, a=0.7),
+                    res * 0.35,
+                    frontier_pts,
+                )
+            )
+
+        cand_pts: List[Point] = []
+        for c in safe:
+            p = Point()
+            p.x = c.wx
+            p.y = c.wy
+            p.z = 0.06
+            cand_pts.append(p)
+        if cand_pts:
+            arr.markers.append(
+                _pts_marker(
+                    "candidates",
+                    2,
+                    ColorRGBA(r=1.0, g=0.9, b=0.1, a=0.9),
+                    res * 0.5,
+                    cand_pts,
+                )
+            )
+
+        rej_pts: List[Point] = []
+        for c in rejected:
+            p = Point()
+            p.x = c.wx
+            p.y = c.wy
+            p.z = 0.05
+            rej_pts.append(p)
+        if rej_pts:
+            arr.markers.append(
+                _pts_marker(
+                    "rejected_unsafe",
+                    3,
+                    ColorRGBA(r=1.0, g=0.15, b=0.1, a=0.85),
+                    res * 0.45,
+                    rej_pts,
+                )
+            )
+
+        bl_pts: List[Point] = []
+        for bx, by, _t in self._blacklist + self._blacklist_failed:
+            p = Point()
+            p.x = bx
+            p.y = by
+            p.z = 0.04
+            bl_pts.append(p)
+        if bl_pts:
+            arr.markers.append(
+                _pts_marker(
+                    "blacklist",
+                    4,
+                    ColorRGBA(r=0.2, g=0.2, b=0.2, a=0.8),
+                    res * 0.55,
+                    bl_pts,
+                )
+            )
+
+        if selected is not None:
+            g = Marker()
+            g.header.frame_id = frame
+            g.header.stamp = now
+            g.ns = "selected_goal"
+            g.id = 5
+            g.type = Marker.SPHERE
+            g.action = Marker.ADD
+            g.scale.x = 0.28
+            g.scale.y = 0.28
+            g.scale.z = 0.28
+            g.color = ColorRGBA(r=0.1, g=0.95, b=0.2, a=0.95)
+            g.pose.position.x = selected.wx
+            g.pose.position.y = selected.wy
+            g.pose.position.z = 0.08
+            arr.markers.append(g)
+
+        self._pub_debug_mk.publish(arr)
+
+    def _handle_goal_failed(self, reason: str) -> None:
+        lg = self.get_logger()
+        lg.warn(f"GOAL_FAILED reason={reason}")
+        vg = self._last_validated_goal
+        if self._last_goal is not None:
+            wx, wy = self._last_goal
+            fbr = float(self.get_parameter("blacklist_failed_goal_radius_m").value)
+            self._blacklist_failed.append((wx, wy, time.monotonic()))
+            lg.info(f"BLACKLIST_GOAL world=({wx:.2f},{wy:.2f}) radius={fbr:.2f}")
+        if vg is not None and bool(self.get_parameter("blacklist_failed_cluster").value):
+            ccx, ccy = vg.cluster.centroid_map
+            if self._map is not None:
+                info = self._map.info
+                res = float(info.resolution)
+                ox = float(info.origin.position.x)
+                oy = float(info.origin.position.y)
+                cwx = ox + (ccx + 0.5) * res
+                cwy = oy + (ccy + 0.5) * res
+                self._blacklist_clusters.append((cwx, cwy, time.monotonic()))
+        self._clearance_override_m = float(
+            self.get_parameter("min_clearance_after_failure_m").value
+        )
+        self._zero()
+        delay = float(self.get_parameter("failure_retry_delay_sec").value)
+        self._goal_deadline = time.monotonic() + delay
+        self._st = _St.PAUSE
+        self._pause_is_no_goal_retry = False
+        self._stat("REPLAN_AFTER_FAILURE")
+        lg.info("REPLAN_AFTER_FAILURE")
 
     def _pick_goal(self) -> Tuple[Optional[ValidatedGoal], str]:
         if self._map is None:
@@ -563,11 +809,6 @@ class FrontierExplorer(Node):
         goal_reach = build_goal_reach_mask(passable, rm, require_strict)
         if reach_strict == 0 and reach_bfs > 0 and not require_strict:
             lg.info("STRICT_REACH_EMPTY: falling back to BFS reachability for V1")
-        approach_min = float(self.get_parameter("approach_search_radius_min_m").value)
-        approach_max = float(self.get_parameter("approach_search_radius_max_m").value)
-        min_occ_clr = float(self.get_parameter("min_occupied_clearance_m").value)
-        req_pass_approach = bool(self.get_parameter("require_passable_for_approach").value)
-        neighbor_fb = float(self.get_parameter("frontier_neighbor_fallback_m").value)
         if seed is not None and smeth in (
             "global_nearest_passable_known_free",
             "seed_reseed_low_reach",
@@ -639,107 +880,72 @@ class FrontierExplorer(Node):
         )
         self._prune_bl()
         br = float(self.get_parameter("blacklist_radius").value)
-        min_d = float(self.get_parameter("min_goal_distance").value)
-        # Centroid distance band: min of the two params (staging name); raise both in YAML to allow farther goals.
-        max_d = min(
-            float(self.get_parameter("max_goal_distance").value),
-            float(self.get_parameter("max_goal_distance_stage_m").value),
+        safe_cfg = self._safe_goal_config()
+        pick = select_best_frontier_goal(
+            ranked,
+            data,
+            w,
+            h,
+            (rx, ry),
+            ox,
+            oy,
+            res,
+            occ,
+            free,
+            unk,
+            passable,
+            goal_reach,
+            self._blacklist + self._blacklist_failed,
+            br,
+            safe_cfg,
+            min_clearance_override_m=self._clearance_override_m,
+            cluster_blacklist=self._blacklist_clusters,
         )
-        fan_a = self.get_parameter("staging_fan_angles_deg").value
-        fan_d = self.get_parameter("staging_fan_distances_m").value
-        fa = tuple(float(x) for x in fan_a) if isinstance(fan_a, (list, tuple)) else (0.0,)
-        fd = tuple(float(x) for x in fan_d) if isinstance(fan_d, (list, tuple)) else (0.3,)
-
-        after_distance = 0
-        after_blacklist = 0
-        after_reachable = 0
-        n_blk_rej = 0
-        reject_summary: Dict[str, int] = {}
-
-        for cluster_id, cl in enumerate(ranked):
-            ccx, ccy = cl.centroid_map
-            cwx = ox + (ccx + 0.5) * res
-            cwy = oy + (ccy + 0.5) * res
-            cd = math.hypot(cwx - rx, cwy - ry)
-            if cd < min_d or cd > max_d:
-                continue
-            after_distance += 1
-            if self._blacklist_covers(cwx, cwy):
-                n_blk_rej += 1
-                continue
-            after_blacklist += 1
-
-            vg, rj, det, _pick_stats = validate_and_build_goal(
-                cl,
-                data,
-                w,
-                h,
-                (rx, ry),
-                robot_ixy,
-                ox,
-                oy,
-                res,
-                passable,
-                goal_reach,
-                occ,
-                free,
-                unk,
-                self._blacklist,
-                br,
-                min_d,
-                max_d,
-                approach_min,
-                approach_max,
-                min_occ_clr,
-                req_pass_approach,
-                neighbor_fb,
-                float(self.get_parameter("fallback_radius_min_m").value),
-                float(self.get_parameter("fallback_radius_max_m").value),
-                bool(self.get_parameter("enable_staging_goal").value),
-                float(self.get_parameter("staging_min_distance_m").value),
-                float(self.get_parameter("staging_max_distance_m").value),
-                fa,
-                fd,
-                bool(self.get_parameter("staging_require_free_value_zero").value),
-                p_st,
-                rs,
+        self._clearance_override_m = None
+        if pick.clearance_relaxed:
+            lg.warn(
+                "SAFE_GOAL_FALLBACK clearance relaxed from "
+                f"{safe_cfg.min_obstacle_clearance_m:.2f}m to {pick.clearance_used_m:.2f}m"
             )
-            if vg is not None:
-                after_reachable += 1
-                dist_robot = math.hypot(vg.wx - rx, vg.wy - ry)
-                lg.info(
-                    f"GOAL_SELECTED cluster_id={cluster_id} approach_cell={vg.approach_ixy} "
-                    f"world=({vg.wx:.2f},{vg.wy:.2f}) dist_robot={dist_robot:.2f}m "
-                    f"method={vg.approach_method}"
+
+        self._last_debug_candidates = pick.safe_candidates
+        self._last_debug_rejected = pick.rejected_unsafe
+        self._debug_markers(clusters, pick.goal, pick.safe_candidates, pick.rejected_unsafe)
+
+        if pick.goal is not None:
+            vg = pick.goal
+            if pick.safe_candidates:
+                lg.info(format_goal_candidates_log(pick.safe_candidates, limit=5))
+            pref = float(self.get_parameter("preferred_obstacle_clearance_m").value)
+            if vg.obstacle_clearance < pref:
+                lg.warn(
+                    f"GOAL_LOW_CLEARANCE selected_clearance={vg.obstacle_clearance:.2f}m"
                 )
-                lg.info("SENDING_NAV2_GOAL")
-                lg.info(
-                    "FRONTIER_DEBUG "
-                    f"raw_cells={raw_frontier_cells} clusters={n_cl} after_distance={after_distance} "
-                    f"after_reachable={after_reachable} after_blacklist={after_blacklist} "
-                    f"reason=goal_selected used_seed_clearing={used_clear}"
-                )
-                self._markers(clusters, vg)
-                return vg, ""
-            key = rj.value if rj is not None else det or "unknown"
-            reject_summary[key] = reject_summary.get(key, 0) + 1
+            dist_robot = math.hypot(vg.wx - rx, vg.wy - ry)
+            lg.info(
+                f"GOAL_SELECTED cluster_id={vg.cluster_id} approach_cell={vg.approach_ixy} "
+                f"world=({vg.wx:.2f},{vg.wy:.2f}) dist_robot={dist_robot:.2f}m "
+                f"obstacle_clearance={vg.obstacle_clearance:.2f}m score={vg.score:.2f} "
+                f"method={vg.approach_method}"
+            )
+            lg.info("SENDING_NAV2_GOAL")
+            lg.info(
+                "FRONTIER_DEBUG "
+                f"raw_cells={raw_frontier_cells} clusters={n_cl} "
+                f"candidates={len(pick.safe_candidates)} rejected_unsafe={len(pick.rejected_unsafe)} "
+                f"reason=goal_selected used_seed_clearing={used_clear}"
+            )
+            self._markers(clusters, vg)
+            return vg, ""
 
-        if reject_summary:
-            parts = " ".join(f"{k}={v}" for k, v in sorted(reject_summary.items()))
-            lg.info(f"CLUSTER_REJECT_SUMMARY: {parts}")
-
-        fr_reason = "no_reachable_frontier"
-        if after_distance == 0:
-            fr_reason = "no_frontier_in_distance_band"
-        elif after_blacklist == 0 and n_blk_rej > 0:
-            fr_reason = "all_blacklisted"
-        elif after_reachable == 0:
-            fr_reason = "no_reachable_frontier"
-
+        lg.warn(
+            "NO_SAFE_GOAL: no approach met clearance/distance/corner rules "
+            f"(rejected_unsafe={len(pick.rejected_unsafe)} clearance_used={pick.clearance_used_m:.2f}m)"
+        )
         lg.info(
             "FRONTIER_DEBUG "
-            f"raw_cells={raw_frontier_cells} clusters={n_cl} after_distance={after_distance} "
-            f"after_reachable={after_reachable} after_blacklist={after_blacklist} reason={fr_reason}"
+            f"raw_cells={raw_frontier_cells} clusters={n_cl} "
+            f"candidates=0 rejected_unsafe={len(pick.rejected_unsafe)} reason=no_safe_goal"
         )
         self._markers(clusters, None)
         return None, "no_valid"
@@ -1000,6 +1206,7 @@ class FrontierExplorer(Node):
             ps.pose.orientation = _yaw_to_q(g.yaw)
             goal.pose = ps
             self._pending_goal = (g.wx, g.wy)
+            self._last_validated_goal = g
             self._pub_goal.publish(ps)
             self.get_logger().info(
                 f"GOAL_SELECTED world=({g.wx:.2f},{g.wy:.2f}) approach={g.approach_ixy} "
@@ -1022,10 +1229,8 @@ class FrontierExplorer(Node):
                 )
                 self._last_goal = self._pending_goal
                 self._pending_goal = None
-                self._blacklist_goal()
                 self._fail_streak += 1
-                self._maybe_recover()
-                self._stat("GOAL_FAILED")
+                self._handle_goal_failed("nav2_rejected")
                 return
             self._goal_handle = gh
             self._result_future = gh.get_result_async()
@@ -1060,10 +1265,8 @@ class FrontierExplorer(Node):
                     "[frontier_explorer] NavigateToPose ended without success "
                     f"(status={st}); blacklisting goal and retrying"
                 )
-                self._blacklist_goal()
                 self._fail_streak += 1
-                self._stat("GOAL_FAILED")
-                self._maybe_recover()
+                self._handle_goal_failed("nav2_abort")
                 return
             if time.monotonic() > self._goal_deadline:
                 if self._goal_handle is not None:
@@ -1073,10 +1276,8 @@ class FrontierExplorer(Node):
                         pass
                 self._goal_handle = None
                 self._result_future = None
-                self._blacklist_goal()
                 self._fail_streak += 1
-                self._maybe_recover()
-                self._stat("GOAL_FAILED")
+                self._handle_goal_failed("goal_timeout")
             return
 
         if self._st == _St.PAUSE:

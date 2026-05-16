@@ -103,18 +103,19 @@ controller_server:
       time_steps: 56
       model_dt: 0.05
       batch_size: 2000
-      ax_max: 2.4
-      ax_min: -2.4
       ay_max: 2.0
       ay_min: -2.0
-      az_max: 2.8
       vx_std: 0.22
       vy_std: 0.2
       wz_std: 0.48
-      vx_max: 0.30
+      # V1 exploration: slower, smoother (tune with real rover width ~0.56 m)
+      vx_max: 0.15
       vx_min: 0.0
       vy_max: 0.5
-      wz_max: 0.90
+      wz_max: 0.60
+      ax_max: 0.4
+      ax_min: -0.4
+      az_max: 0.8
       iteration_count: 1
       prune_distance: 1.7
       transform_tolerance: 0.25
@@ -201,12 +202,13 @@ local_costmap:
       width: 6
       height: 6
       resolution: 0.05
+      # Footprint ~0.56 x 0.40 m (base_footprint); adjust if rover mesh differs
       footprint: "[[0.28, 0.20], [0.28, -0.20], [-0.28, -0.20], [-0.28, 0.20]]"
       plugins: ["voxel_layer", "inflation_layer"]
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 4.0
-        inflation_radius: 0.42
+        cost_scaling_factor: 3.0
+        inflation_radius: 0.55
       voxel_layer:
         plugin: "nav2_costmap_2d::VoxelLayer"
         enabled: True
@@ -238,6 +240,7 @@ global_costmap:
       robot_base_frame: base_footprint
       # Live RTAB-Map grid on /map (relay). Full grid, not rolling (map grows with exploration).
       rolling_window: false
+      # Match local footprint; inflation keeps goals/paths off walls
       footprint: "[[0.28, 0.20], [0.28, -0.20], [-0.28, -0.20], [-0.28, 0.20]]"
       resolution: 0.05
       track_unknown_space: true
@@ -264,8 +267,8 @@ global_costmap:
         map_subscribe_transient_local: true
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 4.0
-        inflation_radius: 0.45
+        cost_scaling_factor: 3.0
+        inflation_radius: 0.55
       always_send_full_costmap: True
 
 # The yaml_filename does not need to be specified since it going to be set by defaults in launch.

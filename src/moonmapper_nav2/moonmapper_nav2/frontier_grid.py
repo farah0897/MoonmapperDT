@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -56,6 +57,61 @@ class ValidatedGoal:
     approach_ixy: Tuple[int, int]
     cluster: FrontierCluster
     approach_method: str
+    obstacle_clearance: float = 0.0
+    unknown_clearance: float = 0.0
+    score: float = 0.0
+    cluster_id: int = -1
+
+
+@dataclass
+class SafeGoalPickConfig:
+    min_goal_dist_m: float = 1.0
+    max_goal_dist_m: float = 6.0
+    min_obstacle_clearance_m: float = 0.45
+    min_obstacle_clearance_floor_m: float = 0.30
+    preferred_obstacle_clearance_m: float = 0.65
+    min_unknown_clearance_m: float = 0.10
+    preferred_unknown_clearance_m: float = 0.25
+    approach_radius_min_m: float = 0.2
+    approach_radius_max_m: float = 2.0
+    score_distance_weight: float = 1.0
+    score_obstacle_weight: float = 3.0
+    score_cluster_weight: float = 1.5
+    score_unknown_weight: float = 1.0
+    min_free_space_around_goal_m: float = 0.45
+    avoid_corner_goals: bool = True
+    allow_corner_fallback: bool = True
+    corner_penalty: float = 5.0
+    corner_check_radius_m: float = 0.5
+    require_passable_for_approach: bool = False
+    neighbor_fallback_m: float = 1.0
+
+
+@dataclass
+class ScoredGoalCandidate:
+    cluster_id: int
+    cluster: FrontierCluster
+    wx: float
+    wy: float
+    mx: int
+    my: int
+    dist_robot: float
+    obstacle_clearance: float
+    unknown_clearance: float
+    score: float
+    is_corner: bool
+    method: str
+    unsafe: bool = False
+    reject_reason: str = ""
+
+
+@dataclass
+class SafeGoalPickResult:
+    goal: Optional[ValidatedGoal]
+    safe_candidates: List[ScoredGoalCandidate] = field(default_factory=list)
+    rejected_unsafe: List[ScoredGoalCandidate] = field(default_factory=list)
+    clearance_relaxed: bool = False
+    clearance_used_m: float = 0.45
 
 
 def _idx(mx: int, my: int, w: int) -> int:
@@ -639,6 +695,442 @@ def format_strict_mask_debug(
         f"after_goal_inflation_count={after_goal_inflation_count} "
         f"final_reach_strict_count={final_reach_strict_count}"
     )
+
+
+def build_obstacle_distance_map(
+    data: Sequence[int],
+    w: int,
+    h: int,
+    occupied_threshold: int,
+    resolution: float,
+) -> List[float]:
+    """Per-cell distance (m) to nearest occupied cell (4-connected BFS)."""
+    n = w * h
+    dist_c = [10**9] * n
+    q: deque[Tuple[int, int]] = deque()
+    for my in range(h):
+        for mx in range(w):
+            i = _idx(mx, my, w)
+            if _is_occupied(int(data[i]), occupied_threshold):
+                dist_c[i] = 0
+                q.append((mx, my))
+    while q:
+        mx, my = q.popleft()
+        i = _idx(mx, my, w)
+        d = dist_c[i]
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            nx, ny = mx + dx, my + dy
+            if nx < 0 or ny < 0 or nx >= w or ny >= h:
+                continue
+            ni = _idx(nx, ny, w)
+            if dist_c[ni] > d + 1:
+                dist_c[ni] = d + 1
+                q.append((nx, ny))
+    res = max(resolution, 1e-9)
+    return [float(d) * res for d in dist_c]
+
+
+def build_unknown_distance_map(
+    data: Sequence[int],
+    w: int,
+    h: int,
+    unknown_value: int,
+    resolution: float,
+) -> List[float]:
+    """Per-cell distance (m) to nearest unknown cell (4-connected BFS)."""
+    n = w * h
+    dist_c = [10**9] * n
+    q: deque[Tuple[int, int]] = deque()
+    for my in range(h):
+        for mx in range(w):
+            i = _idx(mx, my, w)
+            if _is_unknown(int(data[i]), unknown_value):
+                dist_c[i] = 0
+                q.append((mx, my))
+    while q:
+        mx, my = q.popleft()
+        i = _idx(mx, my, w)
+        d = dist_c[i]
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            nx, ny = mx + dx, my + dy
+            if nx < 0 or ny < 0 or nx >= w or ny >= h:
+                continue
+            ni = _idx(nx, ny, w)
+            if dist_c[ni] > d + 1:
+                dist_c[ni] = d + 1
+                q.append((nx, ny))
+    res = max(resolution, 1e-9)
+    return [float(d) * res for d in dist_c]
+
+
+def _is_corner_goal(
+    mx: int,
+    my: int,
+    obstacle_dist: Sequence[float],
+    w: int,
+    h: int,
+    check_radius_m: float,
+    min_free_space_m: float,
+    resolution: float,
+) -> bool:
+    """True when occupied lies on multiple sides within check_radius_m."""
+    res = max(resolution, 1e-9)
+    step = max(1, int(math.ceil(check_radius_m / res)))
+    blocked_sides = 0
+    for dx, dy in ((0, step), (0, -step), (step, 0), (-step, 0)):
+        nx, ny = mx + dx, my + dy
+        if nx < 0 or ny < 0 or nx >= w or ny >= h:
+            blocked_sides += 1
+            continue
+        ni = _idx(nx, ny, w)
+        if obstacle_dist[ni] < min_free_space_m:
+            blocked_sides += 1
+    return blocked_sides >= 2
+
+
+def _score_goal_candidate(
+    dist_robot: float,
+    cluster_size: int,
+    max_cluster_size: int,
+    obstacle_clearance: float,
+    unknown_clearance: float,
+    is_corner: bool,
+    cfg: SafeGoalPickConfig,
+) -> float:
+    norm_size = float(cluster_size) / max(1.0, float(max_cluster_size))
+    obs_term = min(obstacle_clearance, cfg.preferred_obstacle_clearance_m)
+    unk_term = min(unknown_clearance, cfg.preferred_unknown_clearance_m)
+    score = (
+        cfg.score_cluster_weight * norm_size
+        - cfg.score_distance_weight * dist_robot
+        + cfg.score_obstacle_weight * obs_term
+        + cfg.score_unknown_weight * unk_term
+    )
+    if is_corner and cfg.avoid_corner_goals:
+        score -= cfg.corner_penalty
+    return score
+
+
+def _collect_cluster_candidates(
+    cluster_id: int,
+    cl: FrontierCluster,
+    data: Sequence[int],
+    w: int,
+    h: int,
+    goal_reach_mask: Sequence[bool],
+    passable: Optional[Sequence[bool]],
+    obstacle_dist: Sequence[float],
+    unknown_dist: Sequence[float],
+    robot_xy: Tuple[float, float],
+    ox: float,
+    oy: float,
+    res: float,
+    occ_th: int,
+    free_th: int,
+    unknown_val: int,
+    blacklist: Sequence[Tuple[float, float, float]],
+    blacklist_radius: float,
+    cfg: SafeGoalPickConfig,
+    min_clearance_m: float,
+    max_cluster_size: int,
+) -> Tuple[List[ScoredGoalCandidate], List[ScoredGoalCandidate]]:
+    rx, ry = robot_xy
+    safe: List[ScoredGoalCandidate] = []
+    rejected: List[ScoredGoalCandidate] = []
+    ccx, ccy = cl.centroid_map
+    annulus = _cells_in_annulus(
+        ccx, ccy, w, h, ox, oy, res, cfg.approach_radius_min_m, cfg.approach_radius_max_m
+    )
+    seen: set[Tuple[int, int]] = set()
+
+    def try_cell(mx: int, my: int, wx: float, wy: float, method: str) -> None:
+        if (mx, my) in seen:
+            return
+        seen.add((mx, my))
+        gi = _idx(mx, my, w)
+        rej = _validate_approach_candidate(
+            mx,
+            my,
+            data,
+            w,
+            h,
+            goal_reach_mask,
+            passable,
+            cfg.require_passable_for_approach,
+            occ_th,
+            unknown_val,
+            free_th,
+            0.0,
+            res,
+        )
+        if rej is not None:
+            rejected.append(
+                ScoredGoalCandidate(
+                    cluster_id=cluster_id,
+                    cluster=cl,
+                    wx=wx,
+                    wy=wy,
+                    mx=mx,
+                    my=my,
+                    dist_robot=math.hypot(wx - rx, wy - ry),
+                    obstacle_clearance=obstacle_dist[gi] if gi < len(obstacle_dist) else 0.0,
+                    unknown_clearance=unknown_dist[gi] if gi < len(unknown_dist) else 0.0,
+                    score=0.0,
+                    is_corner=False,
+                    method=method,
+                    unsafe=True,
+                    reject_reason=rej,
+                )
+            )
+            return
+        if _blacklisted(wx, wy, blacklist, blacklist_radius):
+            return
+        dr = math.hypot(wx - rx, wy - ry)
+        if dr < cfg.min_goal_dist_m or dr > cfg.max_goal_dist_m:
+            return
+        obs_clr = obstacle_dist[gi] if gi < len(obstacle_dist) else 0.0
+        unk_clr = unknown_dist[gi] if gi < len(unknown_dist) else 0.0
+        is_corner = _is_corner_goal(
+            mx, my, obstacle_dist, w, h, cfg.corner_check_radius_m,
+            cfg.min_free_space_around_goal_m, res,
+        )
+        cand = ScoredGoalCandidate(
+            cluster_id=cluster_id,
+            cluster=cl,
+            wx=wx,
+            wy=wy,
+            mx=mx,
+            my=my,
+            dist_robot=dr,
+            obstacle_clearance=obs_clr,
+            unknown_clearance=unk_clr,
+            score=0.0,
+            is_corner=is_corner,
+            method=method,
+        )
+        if obs_clr < min_clearance_m:
+            cand.unsafe = True
+            cand.reject_reason = "low_obstacle_clearance"
+            rejected.append(cand)
+            return
+        if unk_clr < cfg.min_unknown_clearance_m:
+            cand.unsafe = True
+            cand.reject_reason = "low_unknown_clearance"
+            rejected.append(cand)
+            return
+        if is_corner and cfg.avoid_corner_goals:
+            cand.unsafe = True
+            cand.reject_reason = "corner"
+            rejected.append(cand)
+            return
+        cand.score = _score_goal_candidate(
+            dr, cl.size, max_cluster_size, obs_clr, unk_clr, is_corner, cfg
+        )
+        safe.append(cand)
+
+    for _dc, wx, wy, mx, my in annulus:
+        try_cell(mx, my, wx, wy, "centroid_annulus")
+
+    r_cells = int(math.ceil(cfg.neighbor_fallback_m / max(res, 1e-9))) + 1
+    for fmx, fmy in cl.cells:
+        for my in range(max(0, fmy - r_cells), min(h, fmy + r_cells + 1)):
+            for mx in range(max(0, fmx - r_cells), min(w, fmx + r_cells + 1)):
+                if (mx, my) in cl.cells:
+                    continue
+                wx = ox + (mx + 0.5) * res
+                wy = oy + (my + 0.5) * res
+                if math.hypot(
+                    wx - (ox + (fmx + 0.5) * res),
+                    wy - (oy + (fmy + 0.5) * res),
+                ) > cfg.neighbor_fallback_m + 1e-6:
+                    continue
+                try_cell(mx, my, wx, wy, "neighbor_fallback")
+
+    return safe, rejected
+
+
+def select_best_frontier_goal(
+    ranked_clusters: Sequence[FrontierCluster],
+    data: Sequence[int],
+    w: int,
+    h: int,
+    robot_xy: Tuple[float, float],
+    ox: float,
+    oy: float,
+    res: float,
+    occ_th: int,
+    free_th: int,
+    unknown_val: int,
+    passable: Sequence[bool],
+    goal_reach_mask: Sequence[bool],
+    blacklist: Sequence[Tuple[float, float, float]],
+    blacklist_radius: float,
+    cfg: SafeGoalPickConfig,
+    min_clearance_override_m: Optional[float] = None,
+    cluster_blacklist: Optional[Sequence[Tuple[float, float, float]]] = None,
+) -> SafeGoalPickResult:
+    """Score all clusters; pick highest-scoring safe approach cell."""
+    obstacle_dist = build_obstacle_distance_map(data, w, h, occ_th, res)
+    unknown_dist = build_unknown_distance_map(data, w, h, unknown_val, res)
+    max_cl = max((cl.size for cl in ranked_clusters), default=1)
+    min_clr = (
+        min_clearance_override_m
+        if min_clearance_override_m is not None
+        else cfg.min_obstacle_clearance_m
+    )
+    relaxed = False
+    all_safe: List[ScoredGoalCandidate] = []
+    all_rejected: List[ScoredGoalCandidate] = []
+    cl_bl = cluster_blacklist or []
+
+    for cluster_id, cl in enumerate(ranked_clusters):
+        ccx, ccy = cl.centroid_map
+        cwx = ox + (ccx + 0.5) * res
+        cwy = oy + (ccy + 0.5) * res
+        if _blacklisted(cwx, cwy, cl_bl, blacklist_radius):
+            continue
+        s, r = _collect_cluster_candidates(
+            cluster_id,
+            cl,
+            data,
+            w,
+            h,
+            goal_reach_mask,
+            passable,
+            obstacle_dist,
+            unknown_dist,
+            robot_xy,
+            ox,
+            oy,
+            res,
+            occ_th,
+            free_th,
+            unknown_val,
+            blacklist,
+            blacklist_radius,
+            cfg,
+            min_clr,
+            max_cl,
+        )
+        all_safe.extend(s)
+        all_rejected.extend(r)
+
+    clearance_used = min_clr
+    if not all_safe and min_clr > cfg.min_obstacle_clearance_floor_m:
+        relaxed = True
+        clearance_used = cfg.min_obstacle_clearance_floor_m
+        all_safe = []
+        all_rejected = []
+        for cluster_id, cl in enumerate(ranked_clusters):
+            ccx, ccy = cl.centroid_map
+            cwx = ox + (ccx + 0.5) * res
+            cwy = oy + (ccy + 0.5) * res
+            if _blacklisted(cwx, cwy, cl_bl, blacklist_radius):
+                continue
+            s, r = _collect_cluster_candidates(
+                cluster_id,
+                cl,
+                data,
+                w,
+                h,
+                goal_reach_mask,
+                passable,
+                obstacle_dist,
+                unknown_dist,
+                robot_xy,
+                ox,
+                oy,
+                res,
+                occ_th,
+                free_th,
+                unknown_val,
+                blacklist,
+                blacklist_radius,
+                cfg,
+                clearance_used,
+                max_cl,
+            )
+            all_safe.extend(s)
+            all_rejected.extend(r)
+
+    if not all_safe and cfg.avoid_corner_goals and cfg.allow_corner_fallback:
+        loose = replace(cfg, avoid_corner_goals=False)
+        for cluster_id, cl in enumerate(ranked_clusters):
+            ccx, ccy = cl.centroid_map
+            cwx = ox + (ccx + 0.5) * res
+            cwy = oy + (ccy + 0.5) * res
+            if _blacklisted(cwx, cwy, cl_bl, blacklist_radius):
+                continue
+            s, r = _collect_cluster_candidates(
+                cluster_id,
+                cl,
+                data,
+                w,
+                h,
+                goal_reach_mask,
+                passable,
+                obstacle_dist,
+                unknown_dist,
+                robot_xy,
+                ox,
+                oy,
+                res,
+                occ_th,
+                free_th,
+                unknown_val,
+                blacklist,
+                blacklist_radius,
+                loose,
+                clearance_used,
+                max_cl,
+            )
+            all_safe.extend(s)
+            all_rejected.extend(r)
+
+    if not all_safe:
+        return SafeGoalPickResult(
+            goal=None,
+            safe_candidates=[],
+            rejected_unsafe=all_rejected,
+            clearance_relaxed=relaxed,
+            clearance_used_m=clearance_used,
+        )
+
+    all_safe.sort(key=lambda c: c.score, reverse=True)
+    best = all_safe[0]
+    ccx, ccy = best.cluster.centroid_map
+    cwx = ox + (ccx + 0.5) * res
+    cwy = oy + (ccy + 0.5) * res
+    yaw = math.atan2(cwy - best.wy, cwx - best.wx)
+    vg = ValidatedGoal(
+        wx=best.wx,
+        wy=best.wy,
+        yaw=yaw,
+        approach_ixy=(best.mx, best.my),
+        cluster=best.cluster,
+        approach_method=best.method,
+        obstacle_clearance=best.obstacle_clearance,
+        unknown_clearance=best.unknown_clearance,
+        score=best.score,
+        cluster_id=best.cluster_id,
+    )
+    return SafeGoalPickResult(
+        goal=vg,
+        safe_candidates=all_safe,
+        rejected_unsafe=all_rejected,
+        clearance_relaxed=relaxed,
+        clearance_used_m=clearance_used,
+    )
+
+
+def format_goal_candidates_log(candidates: Sequence[ScoredGoalCandidate], limit: int = 5) -> str:
+    lines = ["GOAL_CANDIDATES:"]
+    for c in candidates[:limit]:
+        lines.append(
+            f"id={c.cluster_id} world=({c.wx:.2f},{c.wy:.2f}) dist={c.dist_robot:.2f} "
+            f"obstacle_clearance={c.obstacle_clearance:.2f} score={c.score:.2f}"
+        )
+    return "\n".join(lines)
 
 
 def build_goal_reach_mask(

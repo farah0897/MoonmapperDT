@@ -19,8 +19,12 @@ class SafetyObstacleNode(Node):
         super().__init__("safety_obstacle_node")
 
         self.declare_parameter("front_stop_distance", 0.35)
-        self.declare_parameter("front_angle_deg", 35.0)
-        # use_sim_time is often pre-set via launch / params-file; avoid double-declare.
+        self.declare_parameter("emergency_stop_distance_m", 0.45)
+        self.declare_parameter("slow_distance_m", 1.0)
+        self.declare_parameter("slow_linear_speed", 0.06)
+        self.declare_parameter("safe_turn_speed", 0.25)
+        self.declare_parameter("front_angle_deg", 55.0)
+        self.declare_parameter("side_angle_deg", 75.0)
         if not self.has_parameter("use_sim_time"):
             self.declare_parameter("use_sim_time", True)
         self.declare_parameter("input_cmd_topic", "/cmd_vel_raw")
@@ -33,7 +37,12 @@ class SafetyObstacleNode(Node):
         self.declare_parameter("debug_log_period_sec", 2.0)
 
         self._front_stop = float(self.get_parameter("front_stop_distance").value)
+        self._emergency_m = float(self.get_parameter("emergency_stop_distance_m").value)
+        self._slow_m = float(self.get_parameter("slow_distance_m").value)
+        self._slow_lin = float(self.get_parameter("slow_linear_speed").value)
+        self._safe_turn = float(self.get_parameter("safe_turn_speed").value)
         self._front_angle_deg = float(self.get_parameter("front_angle_deg").value)
+        self._side_angle_deg = float(self.get_parameter("side_angle_deg").value)
         self._input_topic = str(self.get_parameter("input_cmd_topic").value)
         self._output_topic = str(self.get_parameter("output_cmd_topic").value)
         self._scan_topic = str(self.get_parameter("scan_topic").value)
@@ -63,7 +72,7 @@ class SafetyObstacleNode(Node):
         self.get_logger().info(
             f"safety_obstacle_node: {self._input_topic} + {self._scan_topic} -> "
             f"{self._output_topic} (front {self._front_angle_deg} deg, "
-            f"stop < {self._front_stop} m, allow_reverse={self._allow_rev})"
+            f"emergency<{self._emergency_m}m slow<{self._slow_m}m)"
         )
 
     def _on_cmd(self, msg: Twist) -> None:
@@ -81,8 +90,8 @@ class SafetyObstacleNode(Node):
         age = self.get_clock().now() - stamp
         return age <= Duration(seconds=self._scan_timeout)
 
-    def _min_valid_range_front(self, scan: LaserScan) -> Optional[float]:
-        half_rad = math.radians(self._front_angle_deg)
+    def _min_valid_range_in_cone(self, scan: LaserScan, half_angle_deg: float) -> Optional[float]:
+        half_rad = math.radians(half_angle_deg)
         best: Optional[float] = None
         n = len(scan.ranges)
         for i in range(n):
@@ -99,7 +108,6 @@ class SafetyObstacleNode(Node):
         return best
 
     def _copy_raw_twist(self, raw: Twist) -> Twist:
-        """Kopier Twist; angular.z følger alltid raw (safety snur aldri fortegn på yaw-rate)."""
         out = Twist()
         out.linear.x = float(raw.linear.x)
         out.linear.y = float(raw.linear.y)
@@ -136,14 +144,12 @@ class SafetyObstacleNode(Node):
         )
 
     def _publish_safe(self) -> None:
-        # Ikke publiser stop på output-topic uten innkommende Nav2-kommando — ellers
-        # overskriver vi manuell /cmd_vel (relay) og teleop i sim.
         if self._last_cmd is None:
             return
 
         stop = Twist()
 
-        def pub_debug(blocked: bool, min_front: Optional[float]) -> None:
+        def pub_debug(blocked: bool, min_front: Optional[float], state: str) -> None:
             fm = Float32()
             if min_front is None or (
                 isinstance(min_front, float) and (math.isnan(min_front) or math.isinf(min_front))
@@ -155,10 +161,8 @@ class SafetyObstacleNode(Node):
             ost = String()
             if self._last_scan is None or not self._scan_fresh():
                 ost.data = "no_scan"
-            elif blocked:
-                ost.data = "blocked_front"
             else:
-                ost.data = "clear"
+                ost.data = state
             self._pub_obstacle_front.publish(fm)
             self._pub_obstacle_state.publish(ost)
 
@@ -170,31 +174,56 @@ class SafetyObstacleNode(Node):
             self._pub_front_min.publish(fm)
 
         if self._last_scan is None or not self._scan_fresh():
-            pub_debug(False, None)
-            self._pub.publish(stop)
-            self._maybe_log_debug(self._last_cmd, stop, None, "no_scan")
+            # Pass through Nav2 cmd when scan is missing/stale (do not zero /cmd_vel).
+            passthrough = self._copy_raw_twist(self._last_cmd)
+            pub_debug(False, None, "no_scan")
+            self._pub.publish(passthrough)
+            self._maybe_log_debug(self._last_cmd, passthrough, None, "no_scan")
             return
 
-        min_front = self._min_valid_range_front(self._last_scan)
+        min_front = self._min_valid_range_in_cone(self._last_scan, self._front_angle_deg)
+        _ = self._min_valid_range_in_cone(self._last_scan, self._side_angle_deg)
+        emergency = (
+            min_front is not None and min_front < self._emergency_m
+        )
         blocked = min_front is not None and min_front < self._front_stop
-        pub_debug(blocked, min_front)
+        pub_debug(blocked or emergency, min_front, "clear")
 
         raw = self._last_cmd
         safe = self._copy_raw_twist(raw)
+        state = "clear"
 
-        if blocked:
+        if min_front is not None and min_front < self._slow_m:
+            lx = float(raw.linear.x)
+            if emergency or blocked:
+                state = "stop_turn"
+                if lx > 0.0:
+                    safe.linear.x = (
+                        -self._reverse_speed if self._allow_rev else 0.0
+                    )
+                else:
+                    safe.linear.x = 0.0
+                if abs(safe.angular.z) < 0.05:
+                    safe.angular.z = self._safe_turn if lx >= 0.0 else -self._safe_turn
+                else:
+                    safe.angular.z = math.copysign(
+                        min(abs(safe.angular.z), self._safe_turn), safe.angular.z
+                    )
+            else:
+                state = "slow"
+                if lx > 0.0:
+                    safe.linear.x = min(lx, self._slow_lin)
+                pub_debug(True, min_front, state)
+        elif blocked:
+            state = "stop_turn"
             lx = float(raw.linear.x)
             if lx > 0.0:
-                safe.linear.x = (
-                    -self._reverse_speed if self._allow_rev else 0.0
-                )
-            elif lx < 0.0 and self._allow_rev:
-                safe.linear.x = lx
+                safe.linear.x = -self._reverse_speed if self._allow_rev else 0.0
             else:
                 safe.linear.x = 0.0
-            state = "blocked_front"
-        else:
-            state = "clear"
+
+        if state == "clear":
+            pub_debug(blocked, min_front, state)
 
         self._pub.publish(safe)
         self._maybe_log_debug(raw, safe, min_front, state)
