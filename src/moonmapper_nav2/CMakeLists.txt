@@ -9,6 +9,7 @@ ament_python_install_package(${PROJECT_NAME})
 install(DIRECTORY config launch rviz DESTINATION share/${PROJECT_NAME})
 install(
   PROGRAMS
+  scripts/frontier_explorer
   scripts/nav2_health_check.sh
   scripts/nav2_mission_health_check.sh
   scripts/nav2_localization_diagnose.sh

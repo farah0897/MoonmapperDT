@@ -20,6 +20,7 @@ def generate_launch_description() -> LaunchDescription:
     depth_topic = LaunchConfiguration("depth_topic")
     camera_info_topic = LaunchConfiguration("camera_info_topic")
     rviz = LaunchConfiguration("rtabmap_rviz")
+    database_path = LaunchConfiguration("database_path")
 
     rtabmap = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -37,6 +38,7 @@ def generate_launch_description() -> LaunchDescription:
             "use_sim_time": use_sim_time,
             "map_always_update": "true",
             "rviz": rviz,
+            "database_path": database_path,
             "rtabmap_args": (
                 "Odom/MinInliers:=3 Vis/MinInliers:=3 Odom/ResetCountdown:=1 "
                 "Rtabmap/LoopThr:=0.5 Mem/NotLinkedNodesKept:=false"
@@ -54,6 +56,11 @@ def generate_launch_description() -> LaunchDescription:
             ),
             DeclareLaunchArgument(
                 "camera_info_topic", default_value="/depth_camera/camera_info"
+            ),
+            DeclareLaunchArgument(
+                "database_path",
+                default_value="",
+                description="RTAB-Map SQLite DB path (empty = package default).",
             ),
             DeclareLaunchArgument("rtabmap_rviz", default_value="false"),
             LogInfo(

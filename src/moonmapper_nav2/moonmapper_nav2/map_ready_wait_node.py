@@ -9,6 +9,8 @@ import rclpy
 import tf2_ros
 from nav_msgs.msg import OccupancyGrid
 from rclpy.duration import Duration
+from rclpy.exceptions import ParameterAlreadyDeclaredException
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
@@ -17,13 +19,24 @@ from std_msgs.msg import Bool
 from moonmapper_nav2.rclpy_shutdown import is_shutdown_exception, safe_shutdown
 
 
+def _declare_parameter_if_not_declared(node: Node, name: str, default_value):
+    if node.has_parameter(name):
+        return node.get_parameter(name).value
+    try:
+        node.declare_parameter(name, default_value)
+    except ParameterAlreadyDeclaredException:
+        pass
+    return node.get_parameter(name).value
+
+
 class MapReadyWaitNode(Node):
     def __init__(self) -> None:
         super().__init__("nav2_map_ready_wait")
-        self.declare_parameter("map_topic", "/map")
-        self.declare_parameter("base_frame", "base_footprint")
-        self.declare_parameter("check_period_sec", 2.0)
-        self.declare_parameter("publish_ready", True)
+        _d = _declare_parameter_if_not_declared
+        _d(self, "map_topic", "/map")
+        _d(self, "base_frame", "base_footprint")
+        _d(self, "check_period_sec", 2.0)
+        _d(self, "publish_ready", True)
 
         self._map_topic = str(self.get_parameter("map_topic").value)
         self._base = str(self.get_parameter("base_frame").value)
@@ -33,11 +46,11 @@ class MapReadyWaitNode(Node):
         self._ready = False
         self._last_map: OccupancyGrid | None = None
         self._buf = tf2_ros.Buffer(cache_time=Duration(seconds=30.0))
-        self._listener = tf2_ros.TransformListener(self._buf, self, spin_thread=True)
+        self._listener = tf2_ros.TransformListener(self._buf, self, spin_thread=False)
 
         qos = QoSProfile(
             depth=1,
-            durability=DurabilityPolicy.VOLATILE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
             reliability=ReliabilityPolicy.RELIABLE,
         )
         self.create_subscription(OccupancyGrid, self._map_topic, self._on_map, qos)
@@ -88,6 +101,8 @@ def main() -> int:
         node = MapReadyWaitNode()
         rclpy.spin(node)
     except KeyboardInterrupt:
+        pass
+    except ExternalShutdownException:
         pass
     except Exception as exc:
         if not is_shutdown_exception(exc):

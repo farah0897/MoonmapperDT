@@ -1,0 +1,60 @@
+# V1 frontier explorer (moonmapper_nav2) — loaded by autonomous_exploration_full.launch.py
+#
+# Publishers /frontier_explorer/status (std_msgs/String) and /frontier_explorer/current_goal
+# (geometry_msgs/PoseStamped) use TRANSIENT_LOCAL durability so DDS advertises types while the
+# node is running; ros2 topic info shows them after the node has started spinning.
+frontier_explorer:
+  ros__parameters:
+    use_sim_time: true
+    map_topic: /map
+    map_frame: map
+    base_frame: base_footprint
+    navigate_action: /navigate_to_pose
+    cmd_vel_topic: /cmd_vel_raw
+    exploration_rate_hz: 2.0
+    min_frontier_cluster_size: 5
+    min_goal_distance: 0.45
+    max_goal_distance: 5.0
+    max_goal_distance_stage_m: 2.5
+    goal_timeout_sec: 120.0
+    occupied_threshold: 65
+    free_threshold: 0
+    unknown_value: -1
+    unknown_as_blocked_in_planner_grid: true
+    goal_inflation_radius_m: 0.35
+    retreat_from_frontier_steps: 3
+    blacklist_radius: 0.55
+    blacklist_timeout_sec: 120.0
+    distance_weight: 1.0
+    size_weight: 0.03
+    publish_markers: true
+    start_delay_sec: 5.0
+    nav2_ready_timeout_sec: 120.0
+    nav2_debug_log_interval_sec: 2.0
+    wait_for_nav2: true
+    require_nav_lifecycle_active: true
+    require_cmd_vel_subscriber: true
+    require_map_publisher_for_ready: false
+    wait_log_interval_sec: 12.0
+    integrated_initial_spin: false
+    initial_spin_min_duration_sec: 1.5
+    initial_spin_max_duration_sec: 40.0
+    initial_spin_angular_z: 0.28
+    initial_spin_target_rad: 6.28
+    map_settle_after_spin_sec: 2.5
+    nearest_seed_search_radius_m: 0.6
+    # BFS seed: expanding Euclidean discs (step .. radius_max) on passable-for-BFS overlay
+    bfs_seed_search_radius_m: 3.0
+    bfs_seed_search_step_m: 0.25
+    allow_robot_seed_clearing: true
+    robot_seed_clear_radius_m: 0.25
+    # When no frontier/seed/goal: polite PAUSE retries before counting toward max_rescan_cycles.
+    retry_when_no_frontier: true
+    no_frontier_retry_delay_sec: 5.0
+    max_no_frontier_retries: 0 # 0 = unlimited soft retries (still uses max_rescan_cycles when soft path inactive)
+    enable_staging_goal: false
+    consecutive_fail_limit: 3
+    recovery_pause_sec: 2.0
+    max_rescan_cycles: 8
+    fallback_radius_min_m: 0.15
+    fallback_radius_max_m: 0.8

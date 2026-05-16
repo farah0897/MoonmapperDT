@@ -201,12 +201,12 @@ local_costmap:
       width: 6
       height: 6
       resolution: 0.05
-      robot_radius: 0.25
+      robot_radius: 0.28
       plugins: ["voxel_layer", "inflation_layer"]
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        inflation_radius: 0.32
+        inflation_radius: 0.35
       voxel_layer:
         plugin: "nav2_costmap_2d::VoxelLayer"
         enabled: True
@@ -238,7 +238,7 @@ global_costmap:
       robot_base_frame: base_footprint
       # Live RTAB-Map grid on /map (relay). Full grid, not rolling (map grows with exploration).
       rolling_window: false
-      robot_radius: 0.25
+      robot_radius: 0.28
       resolution: 0.05
       track_unknown_space: true
       transform_tolerance: 0.5
@@ -261,11 +261,11 @@ global_costmap:
         plugin: "nav2_costmap_2d::StaticLayer"
         map_topic: /map
         subscribe_to_updates: true
-        map_subscribe_transient_local: false
+        map_subscribe_transient_local: true
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        inflation_radius: 0.35
+        inflation_radius: 0.38
       always_send_full_costmap: True
 
 # The yaml_filename does not need to be specified since it going to be set by defaults in launch.
@@ -291,7 +291,7 @@ planner_server:
       plugin: "nav2_navfn_planner::NavfnPlanner"
       tolerance: 1.0
       use_astar: false
-      allow_unknown: true
+      allow_unknown: false
 
 smoother_server:
   ros__parameters:

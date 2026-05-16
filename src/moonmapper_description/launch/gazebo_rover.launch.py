@@ -105,12 +105,16 @@ def _gravity_z_mps2(gravity_s: str) -> float | None:
 
 
 def _resolve_world_preset(context):
-    """world_preset:=moon|earth selects world SDF, world_name, default physics_profile."""
+    """world_preset selects world SDF, world_name, default physics_profile."""
     preset = (context.launch_configurations.get("world_preset") or "moon").strip().lower()
     desc_share = get_package_share_directory("moonmapper_description")
     if preset == "earth":
         world_path = os.path.join(desc_share, "worlds", "earth_arena.sdf")
         world_name = "earth_arena"
+        default_profile = "earth_stable_6wd"
+    elif preset == "earth_explore":
+        world_path = os.path.join(desc_share, "worlds", "earth_arena_explore.sdf")
+        world_name = "earth_arena_explore"
         default_profile = "earth_stable_6wd"
     elif preset == "moon":
         world_path = os.path.join(desc_share, "worlds", "moon_arena.sdf")
@@ -121,7 +125,7 @@ def _resolve_world_preset(context):
             LogInfo(
                 msg=(
                     f"[gazebo_rover] Unknown world_preset='{preset}' "
-                    "(use moon or earth)"
+                    "(use moon | earth | earth_explore)"
                 ),
             ),
         ]
@@ -398,7 +402,8 @@ def generate_launch_description() -> LaunchDescription:
             default_value="moon",
             description=(
                 "moon → moon_arena.sdf + safe_6wd (default). "
-                "earth → earth_arena.sdf + earth_6wd (unless physics_profile set). "
+                "earth → earth_arena.sdf. "
+                "earth_explore → earth_arena_explore.sdf. "
                 "Overstyrer world/world_name."
             ),
         ),
@@ -422,13 +427,16 @@ def generate_launch_description() -> LaunchDescription:
         ),
         DeclareLaunchArgument(
             "force_set_pose_after_spawn",
-            default_value="true",
-            description="Call /world/<name>/set_pose after spawning (ensures spawn_z is applied).",
+            default_value="false",
+            description=(
+                "Call /world/<name>/set_pose after spawning (ensures spawn_z is applied). "
+                "Default false for stable autonomous bringup; enable if spawn height mismatch."
+            ),
         ),
         DeclareLaunchArgument(
             "print_pose_after_spawn",
-            default_value="true",
-            description="Print /world/<name>/pose/info once after set_pose (shows actual x/y/z).",
+            default_value="false",
+            description="Print /world/<name>/pose/info once after set_pose (shows actual x/y/z). Default off.",
         ),
         DeclareLaunchArgument(
             "rvizconfig",

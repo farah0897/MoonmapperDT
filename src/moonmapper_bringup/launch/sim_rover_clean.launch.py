@@ -22,13 +22,23 @@ def generate_launch_description() -> LaunchDescription:
             "world_preset",
             default_value="moon",
             description=(
-                "moon → moon_arena + safe_6wd. earth → earth_arena + earth_stable_6wd. "
+                "moon → moon_arena. earth → earth_arena. earth_explore → earth_arena_explore. "
                 "See gazebo_rover.launch.py for logged gravity/friction."
             ),
         ),
         DeclareLaunchArgument("world", default_value=default_world),
         DeclareLaunchArgument("use_rviz", default_value="true"),
         DeclareLaunchArgument("use_sim_time", default_value="true"),
+        DeclareLaunchArgument(
+            "force_set_pose_after_spawn",
+            default_value="false",
+            description="Forward to gazebo_rover: post-spawn gz set_pose. Default false for stable sim.",
+        ),
+        DeclareLaunchArgument(
+            "print_pose_after_spawn",
+            default_value="false",
+            description="Forward to gazebo_rover: gz topic echo pose after spawn. Default false.",
+        ),
         DeclareLaunchArgument(
             "spawn_z",
             default_value="0.026",
@@ -63,6 +73,12 @@ def generate_launch_description() -> LaunchDescription:
                 "enable_diff_plugin": LaunchConfiguration("enable_diff_plugin"),
                 "physics_profile": LaunchConfiguration("physics_profile"),
                 "simple_collision_debug": LaunchConfiguration("simple_collision_debug"),
+                "force_set_pose_after_spawn": LaunchConfiguration(
+                    "force_set_pose_after_spawn"
+                ),
+                "print_pose_after_spawn": LaunchConfiguration(
+                    "print_pose_after_spawn"
+                ),
                 "use_ekf": "false",
             }.items(),
         ),

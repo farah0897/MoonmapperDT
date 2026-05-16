@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from moonmapper_nav2.nav2_map_ready_wait_node import main
+from moonmapper_nav2.frontier_explorer import main
 
 if __name__ == "__main__":
     import sys
