@@ -29,6 +29,7 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <fstream>
 #include <string>
 
 namespace moonmapper {
@@ -40,6 +41,37 @@ static std::string ToLower(std::string s)
   }
   return s;
 }
+
+// #region agent log
+static void AgentDbgRocker(
+    const char *_hypothesis_id,
+    const char *_message,
+    double _sim_s,
+    double _qL,
+    double _qR,
+    double _q_bl,
+    double _q_br,
+    double _qd)
+{
+  try {
+    std::ofstream f(
+        "/home/farr97/rover/simulasjon/moonmapper_ws/.cursor/debug-cb0aaa.log",
+        std::ios::app);
+    if (!f) {
+      return;
+    }
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::system_clock::now().time_since_epoch())
+                        .count();
+    f << "{\"sessionId\":\"cb0aaa\",\"hypothesisId\":\"" << _hypothesis_id
+      << "\",\"location\":\"RockerBogieDifferential.cc:PreUpdate\",\"message\":\""
+      << _message << "\",\"timestamp\":" << ms << ",\"data\":{\"sim_s\":" << _sim_s
+      << ",\"qL\":" << _qL << ",\"qR\":" << _qR << ",\"q_bl\":" << _q_bl
+      << ",\"q_br\":" << _q_br << ",\"q_diff\":" << _qd << "}}\n";
+  } catch (...) {
+  }
+}
+// #endregion
 
 class RockerBogieDifferential : public gz::sim::System,
                                   public gz::sim::ISystemConfigure,
@@ -226,6 +258,16 @@ public:
             << " q_bl=" << q_bl << " q_br=" << q_br << " q_diff=" << qd << " tau_L=" << tau_L
             << " tau_R=" << tau_R << " tau_diff=" << tau_d << "\n";
     }
+
+    // #region agent log
+    constexpr double kRockerWarnRad = 0.55;
+    if ((std::fabs(qL) > kRockerWarnRad || std::fabs(qR) > kRockerWarnRad) &&
+        (this->last_agent_log_s_ < 0.0 ||
+         sim_s - this->last_agent_log_s_ >= this->print_interval_)) {
+      this->last_agent_log_s_ = sim_s;
+      AgentDbgRocker("H1", "rocker_angle_warn", sim_s, qL, qR, q_bl, q_br, qd);
+    }
+    // #endregion
   }
 
 private:
@@ -298,6 +340,7 @@ private:
   bool debug_{false};
   double print_interval_{0.5};
   double last_print_s_{-1.0};
+  double last_agent_log_s_{-1.0};
   bool warned_missing_{false};
 };
 

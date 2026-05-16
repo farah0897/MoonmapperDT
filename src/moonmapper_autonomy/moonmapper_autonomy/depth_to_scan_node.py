@@ -32,7 +32,7 @@ class DepthToScanNode(Node):
         self.declare_parameter("range_min", 0.15)
         self.declare_parameter("range_max", 3.0)
         self.declare_parameter("scan_time", 0.1)
-        self.declare_parameter("output_frame_id", "")
+        self.declare_parameter("output_frame_id", "depth_camera_optical_frame")
 
         self._depth_topic = str(self.get_parameter("depth_image_topic").value)
         self._info_topic = str(self.get_parameter("camera_info_topic").value)
@@ -55,6 +55,7 @@ class DepthToScanNode(Node):
 
         self._ci: Optional[CameraInfo] = None
         self._bad_enc_logged = False
+        self._logged_ci_frame = False
         self._pub = self.create_publisher(LaserScan, self._scan_topic, 10)
         self.create_subscription(Image, self._depth_topic, self._on_depth, 10)
         self.create_subscription(CameraInfo, self._info_topic, self._on_info, 10)
@@ -66,6 +67,11 @@ class DepthToScanNode(Node):
 
     def _on_info(self, msg: CameraInfo) -> None:
         self._ci = msg
+        if not self._logged_ci_frame:
+            self._logged_ci_frame = True
+            self.get_logger().info(
+                f"depth_to_scan_node: camera_info frame_id={msg.header.frame_id}"
+            )
 
     def _read_z(self, msg: Image, u: int, v: int) -> Optional[float]:
         step = msg.step

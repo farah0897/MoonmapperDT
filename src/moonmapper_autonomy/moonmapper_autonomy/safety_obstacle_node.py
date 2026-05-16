@@ -117,6 +117,15 @@ class SafetyObstacleNode(Node):
         out.angular.z = float(raw.angular.z)
         return out
 
+    def _scan_debug_line(self, scan: LaserScan, front: Optional[float]) -> str:
+        left = self._min_valid_range_in_cone(scan, self._side_angle_deg)
+        right = self._min_valid_range_in_cone(scan, self._side_angle_deg)
+        return (
+            f"SAFETY_SCAN_DEBUG frame_id={scan.header.frame_id} "
+            f"angle_min={scan.angle_min:.3f} angle_max={scan.angle_max:.3f} "
+            f"front_min={front} left_min={left} right_min={right}"
+        )
+
     def _maybe_log_debug(
         self,
         raw: Twist | None,
@@ -138,9 +147,12 @@ class SafetyObstacleNode(Node):
         fm = float("nan")
         if min_front is not None and not (math.isnan(min_front) or math.isinf(min_front)):
             fm = float(min_front)
+        extra = ""
+        if self._scan_fresh() and self._last_scan is not None:
+            extra = " " + self._scan_debug_line(self._last_scan, min_front)
         self.get_logger().info(
             f"safety: state={state} raw_lin={rlx:.4f} raw_ang={raz:.4f} "
-            f"safe_lin={safe.linear.x:.4f} safe_ang={safe.angular.z:.4f} front_min={fm} "
+            f"safe_lin={safe.linear.x:.4f} safe_ang={safe.angular.z:.4f} front_min={fm}{extra}"
         )
 
     def _publish_safe(self) -> None:

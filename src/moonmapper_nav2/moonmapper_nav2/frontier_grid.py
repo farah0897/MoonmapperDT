@@ -85,6 +85,10 @@ class SafeGoalPickConfig:
     corner_check_radius_m: float = 0.5
     require_passable_for_approach: bool = False
     neighbor_fallback_m: float = 1.0
+    min_passage_clearance_m: float = 0.38
+    min_passage_clearance_floor_m: float = 0.28
+    narrow_passage_penalty_weight: float = 4.0
+    explored_revisit_penalty: float = 2.5
 
 
 @dataclass
@@ -763,6 +767,31 @@ def build_unknown_distance_map(
     return [float(d) * res for d in dist_c]
 
 
+def _min_clearance_in_disk(
+    mx: int,
+    my: int,
+    obstacle_dist: Sequence[float],
+    w: int,
+    h: int,
+    radius_m: float,
+    res: float,
+) -> float:
+    """Minimum obstacle clearance (m) within a disk around (mx, my)."""
+    r = max(1, int(math.ceil(radius_m / max(res, 1e-9))))
+    best = float("inf")
+    for dy in range(-r, r + 1):
+        for dx in range(-r, r + 1):
+            if dx * dx + dy * dy > r * r:
+                continue
+            cx, cy = mx + dx, my + dy
+            if cx < 0 or cy < 0 or cx >= w or cy >= h:
+                return 0.0
+            ni = _idx(cx, cy, w)
+            if ni < len(obstacle_dist):
+                best = min(best, obstacle_dist[ni])
+    return best if math.isfinite(best) else 0.0
+
+
 def _is_corner_goal(
     mx: int,
     my: int,
@@ -796,6 +825,8 @@ def _score_goal_candidate(
     unknown_clearance: float,
     is_corner: bool,
     cfg: SafeGoalPickConfig,
+    explored_revisit: bool = False,
+    narrow_passage_penalty: float = 0.0,
 ) -> float:
     norm_size = float(cluster_size) / max(1.0, float(max_cluster_size))
     obs_term = min(obstacle_clearance, cfg.preferred_obstacle_clearance_m)
@@ -808,6 +839,9 @@ def _score_goal_candidate(
     )
     if is_corner and cfg.avoid_corner_goals:
         score -= cfg.corner_penalty
+    if explored_revisit:
+        score -= cfg.explored_revisit_penalty
+    score -= narrow_passage_penalty
     return score
 
 
@@ -833,11 +867,17 @@ def _collect_cluster_candidates(
     cfg: SafeGoalPickConfig,
     min_clearance_m: float,
     max_cluster_size: int,
+    explored_explored_fn: Optional[object] = None,
 ) -> Tuple[List[ScoredGoalCandidate], List[ScoredGoalCandidate]]:
     rx, ry = robot_xy
     safe: List[ScoredGoalCandidate] = []
     rejected: List[ScoredGoalCandidate] = []
+    _max_rejected_sample = 300
     ccx, ccy = cl.centroid_map
+
+    def _reject(cand: ScoredGoalCandidate) -> None:
+        if len(rejected) < _max_rejected_sample:
+            rejected.append(cand)
     annulus = _cells_in_annulus(
         ccx, ccy, w, h, ox, oy, res, cfg.approach_radius_min_m, cfg.approach_radius_max_m
     )
@@ -864,7 +904,7 @@ def _collect_cluster_candidates(
             res,
         )
         if rej is not None:
-            rejected.append(
+            _reject(
                 ScoredGoalCandidate(
                     cluster_id=cluster_id,
                     cluster=cl,
@@ -911,20 +951,44 @@ def _collect_cluster_candidates(
         if obs_clr < min_clearance_m:
             cand.unsafe = True
             cand.reject_reason = "low_obstacle_clearance"
-            rejected.append(cand)
+            _reject(cand)
             return
+        passage_clr = _min_clearance_in_disk(
+            mx, my, obstacle_dist, w, h, cfg.min_passage_clearance_m, res
+        )
+        if passage_clr < cfg.min_passage_clearance_floor_m:
+            cand.unsafe = True
+            cand.reject_reason = "narrow_passage"
+            _reject(cand)
+            return
+        narrow_pen = 0.0
+        if passage_clr < min_clearance_m:
+            narrow_pen = (
+                min_clearance_m - passage_clr
+            ) * cfg.narrow_passage_penalty_weight
         if unk_clr < cfg.min_unknown_clearance_m:
             cand.unsafe = True
             cand.reject_reason = "low_unknown_clearance"
-            rejected.append(cand)
+            _reject(cand)
             return
         if is_corner and cfg.avoid_corner_goals:
             cand.unsafe = True
             cand.reject_reason = "corner"
-            rejected.append(cand)
+            _reject(cand)
             return
+        revisited = False
+        if explored_explored_fn is not None and explored_explored_fn(mx, my):
+            revisited = unk_clr > cfg.preferred_unknown_clearance_m * 0.5
         cand.score = _score_goal_candidate(
-            dr, cl.size, max_cluster_size, obs_clr, unk_clr, is_corner, cfg
+            dr,
+            cl.size,
+            max_cluster_size,
+            obs_clr,
+            unk_clr,
+            is_corner,
+            cfg,
+            revisited,
+            narrow_pen,
         )
         safe.append(cand)
 
@@ -932,7 +996,11 @@ def _collect_cluster_candidates(
         try_cell(mx, my, wx, wy, "centroid_annulus")
 
     r_cells = int(math.ceil(cfg.neighbor_fallback_m / max(res, 1e-9))) + 1
-    for fmx, fmy in cl.cells:
+    frontier_cells = list(cl.cells)
+    if len(frontier_cells) > 48:
+        step = max(1, len(frontier_cells) // 48)
+        frontier_cells = frontier_cells[::step][:48]
+    for fmx, fmy in frontier_cells:
         for my in range(max(0, fmy - r_cells), min(h, fmy + r_cells + 1)):
             for mx in range(max(0, fmx - r_cells), min(w, fmx + r_cells + 1)):
                 if (mx, my) in cl.cells:
@@ -968,6 +1036,7 @@ def select_best_frontier_goal(
     cfg: SafeGoalPickConfig,
     min_clearance_override_m: Optional[float] = None,
     cluster_blacklist: Optional[Sequence[Tuple[float, float, float]]] = None,
+    explored_explored_fn: Optional[object] = None,
 ) -> SafeGoalPickResult:
     """Score all clusters; pick highest-scoring safe approach cell."""
     obstacle_dist = build_obstacle_distance_map(data, w, h, occ_th, res)
@@ -1011,6 +1080,7 @@ def select_best_frontier_goal(
             cfg,
             min_clr,
             max_cl,
+            explored_explored_fn,
         )
         all_safe.extend(s)
         all_rejected.extend(r)
@@ -1049,6 +1119,7 @@ def select_best_frontier_goal(
                 cfg,
                 clearance_used,
                 max_cl,
+                explored_explored_fn,
             )
             all_safe.extend(s)
             all_rejected.extend(r)
@@ -1083,6 +1154,7 @@ def select_best_frontier_goal(
                 loose,
                 clearance_used,
                 max_cl,
+                explored_explored_fn,
             )
             all_safe.extend(s)
             all_rejected.extend(r)
@@ -1353,7 +1425,6 @@ def pick_cluster_neighbor_fallback(
                 if math.hypot(wx - (ox + (fmx + 0.5) * res), wy - (oy + (fmy + 0.5) * res)) > (
                     neighbor_radius_m + 1e-6
                 ):
-                    stats.rejected_annulus += 1
                     continue
                 rej = _validate_approach_candidate(
                     mx,

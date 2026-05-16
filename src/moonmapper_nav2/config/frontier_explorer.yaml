@@ -14,9 +14,9 @@ frontier_explorer:
     exploration_rate_hz: 2.0
     min_frontier_cluster_size: 5
     # Safe goal distance band (avoid sub-1 m goals near obstacles)
-    min_goal_distance: 0.85
+    min_goal_distance: 0.5
     # 0.85 m min for 3x6 m sim arena; use 1.0+ on larger maps
-    min_goal_distance_m: 0.85
+    min_goal_distance_m: 0.5
     max_goal_distance: 6.0
     max_goal_distance_m: 6.0
     max_goal_distance_stage_m: 6.0
@@ -36,7 +36,7 @@ frontier_explorer:
     min_occupied_clearance_m: 0.15
     # Safe approach scoring (obstacle distance map)
     min_obstacle_clearance_m: 0.38
-    min_obstacle_clearance_floor_m: 0.30
+    min_obstacle_clearance_floor_m: 0.32
     preferred_obstacle_clearance_m: 0.65
     min_unknown_clearance_m: 0.10
     preferred_unknown_clearance_m: 0.25
@@ -92,3 +92,22 @@ frontier_explorer:
     max_rescan_cycles: 8
     fallback_radius_min_m: 0.15
     fallback_radius_max_m: 0.8
+    # Explored-area memory and completion
+    explored_mark_radius_m: 0.45
+    min_passage_clearance_m: 0.35
+    min_passage_clearance_floor_m: 0.28
+    narrow_passage_penalty_weight: 4.0
+    explored_revisit_penalty: 2.5
+    enable_return_home_on_complete: true
+    max_unknown_fraction_complete: 0.08
+    min_frontier_clusters_to_continue: 1
+    enable_active_backout_on_failure: true
+    backout_duration_sec: 1.2
+    backout_speed_mps: 0.10
+    home_goal_tolerance_m: 0.35
+    # Goal commitment — avoid rapid re-pick / Nav2 instant-success loops
+    min_pause_after_success_sec: 2.5
+    min_nav_commit_sec: 4.0
+    min_time_between_goal_picks_sec: 3.0
+    min_travel_after_goal_m: 0.4
+    max_clusters_to_score: 25

@@ -38,7 +38,8 @@ def depth_to_scan_real(
                 "range_min": 0.15,
                 "range_max": 3.5,
                 "scan_time": 0.1,
-                "output_frame_id": "",
+                # Bruk depth optical frame (matcher URDF + Gazebo gz_frame_id).
+                "output_frame_id": "depth_camera_optical_frame",
             },
         ],
     )

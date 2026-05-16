@@ -315,8 +315,12 @@ behavior_server:
     behavior_plugins: ["spin", "backup", "drive_on_heading", "assisted_teleop", "wait"]
     spin:
       plugin: "nav2_behaviors::Spin"
+  # backup.simulate_ahead_time / backup.speed tuned for recovery after progress failure
     backup:
       plugin: "nav2_behaviors::BackUp"
+      simulate_ahead_time: 1.5
+      backup_dist: 0.35
+      backup_speed: 0.12
     drive_on_heading:
       plugin: "nav2_behaviors::DriveOnHeading"
     wait:

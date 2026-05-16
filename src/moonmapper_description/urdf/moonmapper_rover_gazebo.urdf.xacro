@@ -250,13 +250,13 @@
   <!-- NOTE: sensor <pose> below MUST match the URDF TF chain. -->
   <!-- URDF positions (base_link frame): -->
   <!-- imu_link: ( 0.001234, -0.000060, 0.003194) -->
-  <!-- stereo_camera_link: (-0.166163, -0.008930, 0.069183) -->
-  <!-- stereo_left_camera_link: (-0.190341, 0.015585, 0.062414) -->
-  <!-- stereo_right_camera_link:(-0.190240, -0.040964, 0.063340) -->
-  <!-- depth_camera_link: (-0.190421, -0.014424, 0.061987) -->
-  <!-- mikroskop_link: (-0.091849,-0.001046,-0.006375) -->
-  <!-- triad_sensor_1_link: (-0.091911, 0.046088,-0.043464) -->
-  <!-- triad_sensor_2_link: (-0.091834,-0.048139,-0.043518) -->
+  <!-- Gazebo Sim renderer langs sensor +X (ikke ROS optical +Z). Posisjon = URDF optical origin; rpy 0 0 0 => +X base = rett frem. -->
+  <!-- stereo_left_optical_frame:  ( 0.198393,  0.039044, 0.071375) -->
+  <!-- stereo_right_optical_frame: ( 0.198393, -0.027090, 0.071375) -->
+  <!-- depth_camera_optical_frame: ( 0.205192,  0.006958, 0.071375) -->
+  <!-- mikroskop_link: ( 0.091849, 0.001046,-0.006375) -->
+  <!-- triad_sensor_1_link: ( 0.091911,-0.046088,-0.043464) -->
+  <!-- triad_sensor_2_link: ( 0.091833, 0.048139,-0.043518) -->
   <!-- halleffekt_sensor_link: festet på rocker_right_link (URDF) -->
   <!-- =============================================================== -->
   <gazebo reference="base_link">
@@ -310,10 +310,9 @@
         </linear_acceleration>
       </imu>
     </sensor>
-    <!-- === Venstre kamera (peker +X i base-frame) === Oppløsning 320x240 for aa la GPU-en klare begge kameraer; oek til 640x480 naar GPU er ledig. -->
+    <!-- === Venstre kamera (pos = URDF optical; gz +X = fremover i base_link) === -->
     <sensor name="stereo_left_camera" type="camera">
-      <!-- Rotate 180deg yaw so camera faces +X in base_link -->
-      <pose>-0.190341 0.015585 0.062414 0 0 3.14159</pose>
+      <pose>0.198393 0.039044 0.071375 0 0 0</pose>
       <always_on>true</always_on>
       <update_rate>15</update_rate>
       <topic>stereo/left/image_raw</topic>
@@ -340,8 +339,7 @@
     </sensor>
     <!-- === Hoeyre kamera === -->
     <sensor name="stereo_right_camera" type="camera">
-      <!-- Rotate 180deg yaw so camera faces +X in base_link -->
-      <pose>-0.190240 -0.040964 0.063340 0 0 3.14159</pose>
+      <pose>0.198393 -0.027090 0.071375 0 0 0</pose>
       <always_on>true</always_on>
       <update_rate>15</update_rate>
       <topic>stereo/right/image_raw</topic>
@@ -367,8 +365,7 @@
     </sensor>
     <!-- === RGB-D / Depth-kamera === type="rgbd_camera" publiserer RGB-bilde, depth-bilde OG point cloud samtidig. Plassert midt mellom de to stereo- sensorene (y=0) paa samme hoeyde. Topics fra gz-sim (med <topic>depth_camera</topic>): /depth_camera/image (gz.msgs.Image) /depth_camera/depth_image (gz.msgs.Image, 32FC1) /depth_camera/points (gz.msgs.PointCloudPacked) /depth_camera/camera_info (gz.msgs.CameraInfo) Near-planet er hardt begrenset til 0.1 m paa moderne GPU- rendere (ogre2), sa vi setter 0.05 -> clampes til 0.1. Den er lav nok for roveren vaar. -->
     <sensor name="depth_camera" type="rgbd_camera">
-      <!-- Rotate 180deg yaw so camera faces +X in base_link -->
-      <pose>-0.190421 -0.014424 0.061987 0 0 3.14159</pose>
+      <pose>0.205192 0.006958 0.071375 0 0 0</pose>
       <always_on>true</always_on>
       <update_rate>15</update_rate>
       <topic>depth_camera</topic>
@@ -397,7 +394,7 @@
     <!-- === Mikroskop (Level 1): nede-pekende inspeksjonskamera === Kameraet festes direkte paa base_link (robust mot fixed-joint lumping), men frame-id settes til mikroskop_optical_frame som finnes i URDF-TF. Gazebo-kamera peker langs +X i sensorrammen. Vi setter orienteringen til ROS optical-konvensjon (x=right, y=down, z=forward) slik at bildet ikke blir "sideways", og slik at kamera peker ned mot bakken. -->
     <sensor name="microscope_camera" type="camera">
       <!-- base_link -> mikroskop_link (samme xyz som URDF mikroskop_joint). -->
-      <pose>-0.091849 -0.001046 -0.006375 0 1.57079632679 0</pose>
+      <pose>0.091849 0.001046 -0.006375 0 0 0</pose>
       <always_on>true</always_on>
       <update_rate>10</update_rate>
       <topic>microscope/image_raw</topic>
@@ -423,7 +420,7 @@
       </camera>
     </sensor>
   </gazebo>
-  <!-- Kamerahuset er ren visual; la den lumpes som vanlig med base_link -->
+  <!-- Kameratre: negligible inertial + lumping inn i base_link (urdf2sdf-krav). Ingen kollisjon. -->
   <gazebo reference="stereo_camera_link">
     <selfCollide>false</selfCollide>
   </gazebo>

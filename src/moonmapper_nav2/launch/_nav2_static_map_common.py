@@ -35,7 +35,7 @@ def depth_to_scan_node(use_sim_time: LaunchConfiguration) -> Node:
                 "range_min": 0.15,
                 "range_max": 3.0,
                 "scan_time": 0.1,
-                "output_frame_id": "",
+                "output_frame_id": "depth_camera_optical_frame",
             },
         ],
     )
