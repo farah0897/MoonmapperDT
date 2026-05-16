@@ -43,6 +43,12 @@ from moonmapper_nav2.frontier_exploration_memory import (
     exploration_complete,
     map_unknown_fraction,
 )
+from moonmapper_nav2.frontier_explorer_recovery import (
+    RecoveryPhase,
+    RecoveryRunner,
+    coverage_stable,
+    map_known_cell_count,
+)
 from moonmapper_nav2.frontier_grid import (
     SafeGoalPickConfig,
     ScoredGoalCandidate,
@@ -75,8 +81,6 @@ FRONTIER_TOPIC_QOS = QoSProfile(
     reliability=ReliabilityPolicy.RELIABLE,
     durability=DurabilityPolicy.TRANSIENT_LOCAL,
 )
-
-
 def declare_parameter_if_not_declared(node: Node, name: str, default_value):
     """Declare only if absent (YAML / launch dict may already set parameters)."""
     if node.has_parameter(name):
@@ -98,6 +102,7 @@ class _St(Enum):
     SEND = auto()
     NAV = auto()
     PAUSE = auto()
+    RECOVERY = auto()
     BACKOUT = auto()
     RETURN_HOME = auto()
     NAV_HOME = auto()
@@ -231,6 +236,36 @@ class FrontierExplorer(Node):
         d(self, "min_time_between_goal_picks_sec", 3.0)
         d(self, "min_travel_after_goal_m", 0.4)
         d(self, "max_clusters_to_score", 25)
+        d(self, "preferred_goal_distance_m", 1.5)
+        d(self, "decision_timeout_sec", 3.0)
+        d(self, "max_search_attempts_before_recovery", 3)
+        d(self, "allow_relaxed_goal_after_attempts", 2)
+        d(self, "goal_reselect_cooldown_sec", 1.0)
+        d(self, "enable_recovery_maneuvers", True)
+        d(self, "recovery_spin_angle_deg", 160.0)
+        d(self, "recovery_forward_distance_m", 0.35)
+        d(self, "recovery_backup_distance_m", 0.20)
+        d(self, "recovery_turn_angle_deg", 45.0)
+        d(self, "recovery_cmd_vel_linear", 0.05)
+        d(self, "recovery_cmd_vel_angular", 0.25)
+        d(self, "max_recovery_cycles", 5)
+        d(self, "stuck_timeout_sec", 8.0)
+        d(self, "min_progress_m", 0.10)
+        d(self, "min_yaw_progress_rad", 0.15)
+        d(self, "max_same_goal_failures", 2)
+        d(self, "blacklist_radius_m", 0.6)
+        d(self, "blacklist_duration_sec", 60.0)
+        d(self, "completion_check_enabled", True)
+        d(self, "completion_no_frontier_attempts", 5)
+        d(self, "min_exploration_time_sec", 30.0)
+        d(self, "coverage_stable_time_sec", 10.0)
+        d(self, "coverage_delta_threshold_cells", 30)
+        d(self, "reachable_unknown_threshold_ratio", 0.08)
+        d(self, "return_home_enabled", True)
+        d(self, "return_home_goal_tolerance_m", 0.35)
+        d(self, "return_home_yaw_tolerance_rad", 0.6)
+        d(self, "return_home_on_completion", True)
+        d(self, "return_home_retry_tolerance_m", 0.5)
 
         self._logged_map_tf_diag = False
         self._no_frontier_soft_retries = 0
@@ -277,6 +312,19 @@ class FrontierExplorer(Node):
         self._nav_started_at: float = 0.0
         self._nav_start_xy: Optional[Tuple[float, float]] = None
         self._sent_cluster_ids: Dict[int, float] = {}
+        self._search_fail_attempts = 0
+        self._recovery_cycles = 0
+        self._exploration_t0 = 0.0
+        self._select_entered_at = 0.0
+        self._last_known_cells = -1
+        self._coverage_stable_since = 0.0
+        self._nav_progress_xy: Optional[Tuple[float, float]] = None
+        self._nav_progress_yaw: Optional[float] = None
+        self._nav_progress_t0 = 0.0
+        self._same_goal_failures = 0
+        self._last_pick_log_t = 0.0
+        self._home_saved_published = False
+        self._return_home_retry = False
 
         self._tf = tf2_ros.Buffer(cache_time=Duration(seconds=30.0))
         tf2_ros.TransformListener(self._tf, self, spin_thread=False)
@@ -286,9 +334,20 @@ class FrontierExplorer(Node):
         self._cmd = self.create_publisher(Twist, str(self.get_parameter("cmd_vel_topic").value), 10)
         self._pub_stat = self.create_publisher(String, "/frontier_explorer/status", FRONTIER_TOPIC_QOS)
         self._pub_goal = self.create_publisher(PoseStamped, "/frontier_explorer/current_goal", FRONTIER_TOPIC_QOS)
+        self._pub_start = self.create_publisher(
+            PoseStamped, "/frontier_explorer/start_pose", FRONTIER_TOPIC_QOS
+        )
+        self._pub_return_goal = self.create_publisher(
+            PoseStamped, "/frontier_explorer/return_home_goal", FRONTIER_TOPIC_QOS
+        )
         self._pub_mk = self.create_publisher(MarkerArray, "/frontier_explorer/markers", 10)
         self._pub_debug_mk = self.create_publisher(
             MarkerArray, "/frontier_explorer/debug_markers", 10
+        )
+        self._recovery = RecoveryRunner(
+            self.get_parameter,
+            lambda tw: self._cmd.publish(tw),
+            self._odom_yaw,
         )
         self._last_debug_candidates: List[ScoredGoalCandidate] = []
         self._last_debug_rejected: List[ScoredGoalCandidate] = []
@@ -328,11 +387,35 @@ class FrontierExplorer(Node):
             "[frontier_explorer] config: "
             f"map_topic={mt} map_frame={mf} base_frame={bf} cmd_vel_topic={cv} navigate_action={nav}"
         )
-        self._stat("STARTING")
+        self._transition("STARTUP", "node_started")
         ps_ad = PoseStamped()
         ps_ad.header.frame_id = mf
         ps_ad.header.stamp = self.get_clock().now().to_msg()
         self._pub_goal.publish(ps_ad)
+        self._log_frontier_config()
+
+    def _transition(self, status: str, reason: str = "") -> None:
+        prev = self._status
+        if status == prev:
+            return
+        msg = f"STATE {prev} -> {status}" if prev else f"STATE -> {status}"
+        if reason:
+            msg += f" reason={reason}"
+        self.get_logger().info(f"[frontier_explorer] {msg}")
+        self._status = status
+        self._pub_stat.publish(String(data=status))
+
+    def _log_frontier_config(self) -> None:
+        lg = self.get_logger()
+        lg.info(
+            "FRONTIER_CONFIG "
+            f"initial_spin={bool(self.get_parameter('integrated_initial_spin').value)} "
+            f"return_home={bool(self.get_parameter('return_home_enabled').value)} "
+            f"decision_timeout_sec={float(self.get_parameter('decision_timeout_sec').value):.1f} "
+            f"min_goal_distance_m={float(self.get_parameter('min_goal_distance_m').value):.2f} "
+            f"max_goal_distance_m={float(self.get_parameter('max_goal_distance_m').value):.2f} "
+            f"enable_recovery={bool(self.get_parameter('enable_recovery_maneuvers').value)}"
+        )
 
     def _maybe_log_map_robot_diag(self, rx: float, ry: float) -> None:
         """One-shot debug: map extents vs robot pose (helps Nav2 \"out of costmap\" triage)."""
@@ -357,11 +440,7 @@ class FrontierExplorer(Node):
         self._map = msg
 
     def _stat(self, s: str) -> None:
-        if s == self._status:
-            return
-        self.get_logger().info(f"[frontier_explorer] {s}")
-        self._status = s
-        self._pub_stat.publish(String(data=s))
+        self._transition(s)
 
     def _pose_map(self) -> Optional[Tuple[float, float, float]]:
         mf = str(self.get_parameter("map_frame").value)
@@ -442,6 +521,15 @@ class FrontierExplorer(Node):
 
         return _fn
 
+    def _pose_to_stamped(self, x: float, y: float, yaw: float) -> PoseStamped:
+        ps = PoseStamped()
+        ps.header.frame_id = str(self.get_parameter("map_frame").value)
+        ps.header.stamp = self.get_clock().now().to_msg()
+        ps.pose.position.x = x
+        ps.pose.position.y = y
+        ps.pose.orientation = _yaw_to_q(yaw)
+        return ps
+
     def _save_home_pose_if_needed(self) -> None:
         if self._home_pose is not None:
             return
@@ -450,27 +538,116 @@ class FrontierExplorer(Node):
             return
         self._home_pose = (pose[0], pose[1], pose[2])
         self.get_logger().info(
-            f"HOME_POSE saved world=({pose[0]:.2f},{pose[1]:.2f}) yaw={pose[2]:.2f}"
+            f"START_POSE_SAVED map=({pose[0]:.2f},{pose[1]:.2f},{pose[2]:.2f})"
+        )
+        self._pub_start.publish(self._pose_to_stamped(pose[0], pose[1], pose[2]))
+        self._home_saved_published = True
+        self._transition("SAVE_START_POSE", "nav2_ready")
+
+    def _coverage_debug_log(self, nowm: float) -> None:
+        if self._map is None or len(self._map.data) == 0:
+            return
+        unk = int(self.get_parameter("unknown_value").value)
+        free = int(self.get_parameter("free_threshold").value)
+        occ = int(self.get_parameter("occupied_threshold").value)
+        unk_frac, uk, fr, oc = map_unknown_fraction(self._map.data, unk, free, occ)
+        known = fr + oc
+        delta = 0 if self._last_known_cells < 0 else abs(known - self._last_known_cells)
+        self.get_logger().info(
+            "COVERAGE_DEBUG "
+            f"known_cells={known} free_cells={fr} unknown_cells={uk} "
+            f"reachable_unknown_ratio={unk_frac:.3f} delta_known_cells={delta} "
+            f"no_frontier_attempts={self._search_fail_attempts}"
         )
 
     def _should_return_home(self, why: str) -> Tuple[bool, str]:
-        if not bool(self.get_parameter("enable_return_home_on_complete").value):
+        ret_on = bool(self.get_parameter("return_home_enabled").value) or bool(
+            self.get_parameter("enable_return_home_on_complete").value
+        )
+        if not ret_on or not bool(self.get_parameter("return_home_on_completion").value):
             return False, ""
-        if self._home_pose is None:
+        if not bool(self.get_parameter("completion_check_enabled").value):
+            return False, ""
+        if self._home_pose is None or not self._did_initial_spin:
             return False, ""
         if why not in ("no_clusters", "no_valid", "no_seed"):
             return False, ""
+        nowm = time.monotonic()
+        if self._exploration_t0 <= 0.0:
+            return False, ""
+        if nowm - self._exploration_t0 < float(self.get_parameter("min_exploration_time_sec").value):
+            return False, ""
+        min_nf = int(self.get_parameter("completion_no_frontier_attempts").value)
+        if self._search_fail_attempts < min_nf:
+            return False, ""
+        max_rec = int(self.get_parameter("max_recovery_cycles").value)
+        if self._recovery_cycles < min(max_rec, 1):
+            return False, ""
+        if self._map is not None and len(self._map.data) > 0:
+            unk = int(self.get_parameter("unknown_value").value)
+            free = int(self.get_parameter("free_threshold").value)
+            occ = int(self.get_parameter("occupied_threshold").value)
+            known = map_known_cell_count(self._map.data, unk, free, occ)
+            stable, self._coverage_stable_since = coverage_stable(
+                known,
+                self._last_known_cells,
+                self._coverage_stable_since,
+                nowm,
+                int(self.get_parameter("coverage_delta_threshold_cells").value),
+                float(self.get_parameter("coverage_stable_time_sec").value),
+            )
+            self._last_known_cells = known
+            if not stable:
+                return False, ""
         complete, reason = exploration_complete(
             self._last_n_clusters,
             self._last_unknown_fraction,
-            float(self.get_parameter("max_unknown_fraction_complete").value),
+            float(self.get_parameter("reachable_unknown_threshold_ratio").value),
             int(self.get_parameter("min_frontier_clusters_to_continue").value),
         )
         if complete:
-            return True, reason
-        if self._rescan_count > int(self.get_parameter("max_rescan_cycles").value):
-            return True, "max_rescan_cycles"
+            self._coverage_debug_log(nowm)
+            return True, f"no_frontiers_and_map_stable:{reason}"
+        if (
+            self._search_fail_attempts >= min_nf
+            and self._recovery_cycles >= int(self.get_parameter("max_recovery_cycles").value)
+        ):
+            self._coverage_debug_log(nowm)
+            return True, "no_frontiers_after_recovery"
         return False, ""
+
+    def _start_recovery(self, reason: str, phase: RecoveryPhase = RecoveryPhase.SPIN) -> None:
+        if self._goal_handle is not None:
+            try:
+                self._goal_handle.cancel_goal_async()
+            except Exception:
+                pass
+        self._goal_handle = None
+        self._result_future = None
+        self._send_future = None
+        self._zero()
+        self._recovery_cycles += 1
+        self._recovery.start(phase)
+        self._st = _St.RECOVERY
+        self._transition("RECOVERY_MANEUVER", reason)
+        self.get_logger().info(f"RECOVERY_MANEUVER phase={phase.name} cycle={self._recovery_cycles}")
+
+    def _maybe_start_recovery_instead_of_pause(self, why: str) -> bool:
+        if not bool(self.get_parameter("enable_recovery_maneuvers").value):
+            return False
+        max_rec = int(self.get_parameter("max_recovery_cycles").value)
+        if self._recovery_cycles >= max_rec:
+            return False
+        need = int(self.get_parameter("max_search_attempts_before_recovery").value)
+        if self._search_fail_attempts < need:
+            return False
+        if self._goal_handle is not None or self._st in (_St.SEND, _St.NAV, _St.NAV_HOME):
+            return False
+        phase = RecoveryPhase.SPIN
+        if why == "no_seed" or self._obstacle_blocked_since is not None:
+            phase = RecoveryPhase.BACKUP_TURN
+        self._start_recovery(f"no_valid_frontier_timeout:{why}", phase)
+        return True
 
     def _note_cluster_sent(self, cluster_id: int) -> None:
         self._sent_cluster_ids[cluster_id] = time.monotonic()
@@ -536,7 +713,9 @@ class FrontierExplorer(Node):
 
     def _prune_bl(self) -> None:
         now = time.monotonic()
-        to = float(self.get_parameter("blacklist_timeout_sec").value)
+        to = float(self.get_parameter("blacklist_duration_sec").value)
+        if to <= 0.0:
+            to = float(self.get_parameter("blacklist_timeout_sec").value)
         self._blacklist = [(x, y, tt) for x, y, tt in self._blacklist if now - tt < to]
         self._blacklist_failed = [(x, y, tt) for x, y, tt in self._blacklist_failed if now - tt < to]
         self._blacklist_clusters = [
@@ -619,7 +798,9 @@ class FrontierExplorer(Node):
         self._pub_mk.publish(arr)
 
     def _blacklist_covers(self, wx: float, wy: float) -> bool:
-        br = float(self.get_parameter("blacklist_radius").value)
+        br = float(self.get_parameter("blacklist_radius_m").value)
+        if br <= 0.0:
+            br = float(self.get_parameter("blacklist_radius").value)
         for bx, by, _t in self._blacklist:
             if math.hypot(wx - bx, wy - by) < br:
                 return True
@@ -821,13 +1002,25 @@ class FrontierExplorer(Node):
     def _handle_goal_failed(self, reason: str) -> None:
         lg = self.get_logger()
         lg.warn(f"GOAL_FAILED reason={reason}")
+        self._transition("GOAL_FAILED", reason)
         vg = self._last_validated_goal
+        self._same_goal_failures += 1
         if self._last_goal is not None:
             wx, wy = self._last_goal
-            fbr = float(self.get_parameter("blacklist_failed_goal_radius_m").value)
+            fbr = float(self.get_parameter("blacklist_radius_m").value)
+            if fbr <= 0.0:
+                fbr = float(self.get_parameter("blacklist_failed_goal_radius_m").value)
             self._blacklist_failed.append((wx, wy, time.monotonic()))
-            lg.info(f"BLACKLIST_GOAL world=({wx:.2f},{wy:.2f}) radius={fbr:.2f}")
-        if vg is not None and bool(self.get_parameter("blacklist_failed_cluster").value):
+            dur = float(self.get_parameter("blacklist_duration_sec").value)
+            lg.info(
+                f"BLACKLIST_ADD world=({wx:.2f},{wy:.2f}) radius={fbr:.2f} duration={dur:.0f}"
+            )
+        max_same = int(self.get_parameter("max_same_goal_failures").value)
+        if (
+            vg is not None
+            and bool(self.get_parameter("blacklist_failed_cluster").value)
+            and self._same_goal_failures >= max_same
+        ):
             ccx, ccy = vg.cluster.centroid_map
             if self._map is not None:
                 info = self._map.info
@@ -841,6 +1034,8 @@ class FrontierExplorer(Node):
             self.get_parameter("min_clearance_after_failure_m").value
         )
         self._zero()
+        if self._maybe_start_recovery_instead_of_pause(reason):
+            return
         if bool(self.get_parameter("enable_active_backout_on_failure").value):
             self._start_backout()
             return
@@ -1045,8 +1240,24 @@ class FrontierExplorer(Node):
         max_cl_score = int(self.get_parameter("max_clusters_to_score").value)
         if max_cl_score > 0:
             ranked = ranked[:max_cl_score]
+        cluster_cd = float(self.get_parameter("goal_reselect_cooldown_sec").value)
+        ranked_avail = [
+            cl
+            for cid, cl in enumerate(ranked)
+            if not self._cluster_recently_sent(cid, cluster_cd)
+        ]
+        if ranked_avail:
+            ranked = ranked_avail
         self._prune_bl()
-        br = float(self.get_parameter("blacklist_radius").value)
+        br = float(self.get_parameter("blacklist_radius_m").value)
+        if br <= 0.0:
+            br = float(self.get_parameter("blacklist_radius").value)
+        relax_after = int(self.get_parameter("allow_relaxed_goal_after_attempts").value)
+        min_clr_override = self._clearance_override_m
+        if min_clr_override is None and self._search_fail_attempts >= relax_after:
+            min_clr_override = float(
+                self.get_parameter("min_obstacle_clearance_floor_m").value
+            )
         self._last_n_clusters = n_cl
         unk_frac, _uk, _fr, _oc = map_unknown_fraction(data, unk, free, occ)
         self._last_unknown_fraction = unk_frac
@@ -1069,7 +1280,7 @@ class FrontierExplorer(Node):
             self._blacklist + self._blacklist_failed,
             br,
             safe_cfg,
-            min_clearance_override_m=self._clearance_override_m,
+            min_clearance_override_m=min_clr_override,
             cluster_blacklist=self._blacklist_clusters,
             explored_explored_fn=explored_fn,
         )
@@ -1140,6 +1351,7 @@ class FrontierExplorer(Node):
 
     def _done(self, msg: str) -> None:
         self._st = _St.DONE
+        self._recovery.stop()
         self._zero()
         if self._goal_handle is not None:
             try:
@@ -1149,7 +1361,7 @@ class FrontierExplorer(Node):
         self._goal_handle = None
         self._send_future = None
         self._result_future = None
-        self._stat(msg)
+        self._transition("DONE", msg)
 
     def _tick(self) -> None:
         try:
@@ -1168,7 +1380,7 @@ class FrontierExplorer(Node):
     def _tick_impl(self) -> None:
         if not rclpy.ok() or self._st == _St.DONE:
             return
-        if self._st not in (_St.BACKOUT, _St.DONE):
+        if self._st not in (_St.BACKOUT, _St.DONE, _St.RECOVERY):
             self._mark_explored_current()
         if self.get_clock().now() < self._start_at:
             self._stat("WAIT_START_DELAY")
@@ -1340,12 +1552,27 @@ class FrontierExplorer(Node):
             self._pub_goal.publish(ps)
             return
 
+        if self._st == _St.RECOVERY:
+            if self._goal_handle is not None:
+                self._zero()
+                return
+            pose = self._pose_map()
+            if self._recovery.tick(pose):
+                self._search_fail_attempts = max(0, self._search_fail_attempts - 1)
+                self._st = _St.SELECT
+                self._select_entered_at = time.monotonic()
+                self._transition("SEARCH_FRONTIER", "recovery_done")
+            return
+
         if self._st == _St.SELECT:
             nowm = time.monotonic()
+            if self._exploration_t0 <= 0.0 and self._did_initial_spin:
+                self._exploration_t0 = nowm
+            if self._select_entered_at <= 0.0:
+                self._select_entered_at = nowm
             if nowm < self._next_goal_pick_at:
-                self._stat("GOAL_PICK_COOLDOWN")
                 return
-            self._stat("SEARCHING_FRONTIER")
+            self._transition("SEARCH_FRONTIER")
             g, why = self._pick_goal()
             if g is None:
                 soft_whys = {"no_clusters", "no_seed", "no_valid"}
@@ -1359,6 +1586,9 @@ class FrontierExplorer(Node):
 
                 if use_soft:
                     self._no_frontier_soft_retries += 1
+                    self._search_fail_attempts += 1
+                    if self._maybe_start_recovery_instead_of_pause(why):
+                        return
                     self.get_logger().warn(
                         "No goal (%s) — soft retry pause %.1fs (%s/%s)"
                         % (
@@ -1372,18 +1602,21 @@ class FrontierExplorer(Node):
                     self._st = _St.PAUSE
                     self._goal_deadline = time.monotonic() + delay_nf
                     self._pause_is_no_goal_retry = True
-                    self._stat("SOFT_RETRY_NO_FRONTIER")
+                    self._transition("SEARCH_FRONTIER", f"soft_retry:{why}")
                     return
 
                 self._no_frontier_soft_retries = 0
                 self._rescan_count += 1
+                self._search_fail_attempts += 1
+                if self._maybe_start_recovery_instead_of_pause(why):
+                    return
                 go_home, home_reason = self._should_return_home(why)
                 if go_home:
                     self.get_logger().info(
                         f"EXPLORATION_COMPLETE reason={home_reason} — returning home"
                     )
                     self._st = _St.RETURN_HOME
-                    self._stat("EXPLORATION_COMPLETE")
+                    self._transition("CHECK_COMPLETION", home_reason)
                     return
                 if self._rescan_count > int(self.get_parameter("max_rescan_cycles").value):
                     go_home2, hr2 = self._should_return_home(why)
@@ -1392,38 +1625,33 @@ class FrontierExplorer(Node):
                             f"EXPLORATION_COMPLETE reason={hr2} — returning home"
                         )
                         self._st = _St.RETURN_HOME
-                        self._stat("EXPLORATION_COMPLETE")
+                        self._transition("CHECK_COMPLETION", hr2)
                         return
                     self._done("NO_VALID_FRONTIER")
                     return
-                self.get_logger().warn(f"No goal ({why}) — recovery pause")
+                self.get_logger().warn(f"No goal ({why}) — short retry")
                 self._fail_streak += 1
                 self._st = _St.PAUSE
-                self._goal_deadline = time.monotonic() + float(
-                    self.get_parameter("recovery_pause_sec").value
+                self._goal_deadline = time.monotonic() + min(
+                    float(self.get_parameter("recovery_pause_sec").value),
+                    float(self.get_parameter("decision_timeout_sec").value),
                 )
                 self._pause_is_no_goal_retry = False
-                self._stat("RECOVER_NO_GOAL")
                 return
             self._rescan_count = 0
             self._no_frontier_soft_retries = 0
+            self._search_fail_attempts = 0
+            self._select_entered_at = 0.0
             self._last_validated_goal = g
-            cluster_cd = float(self.get_parameter("min_time_between_goal_picks_sec").value)
-            if self._cluster_recently_sent(g.cluster_id, cluster_cd):
-                self.get_logger().info(
-                    f"GOAL_SKIP recently sent cluster_id={g.cluster_id} "
-                    f"(cooldown {cluster_cd:.1f}s)"
-                )
-                self._schedule_next_goal_pick(cluster_cd)
-                self._st = _St.PAUSE
-                self._goal_deadline = self._next_goal_pick_at
-                self._stat("GOAL_CLUSTER_COOLDOWN")
-                return
+            self._same_goal_failures = 0
             self._note_cluster_sent(g.cluster_id)
             pose = self._pose_map()
             if pose is not None:
                 self._nav_start_xy = (pose[0], pose[1])
+                self._nav_progress_xy = (pose[0], pose[1])
+                self._nav_progress_yaw = pose[2]
             self._nav_started_at = time.monotonic()
+            self._nav_progress_t0 = self._nav_started_at
             self.get_logger().info(
                 f"GOAL_COMMITTED cluster_id={g.cluster_id} world=({g.wx:.2f},{g.wy:.2f}) "
                 f"dist_robot={math.hypot(g.wx - pose[0], g.wy - pose[1]) if pose else 0:.2f}m"
@@ -1434,16 +1662,21 @@ class FrontierExplorer(Node):
             )
             self.get_logger().info("SENDING_NAV2_GOAL")
             self._send_nav_goal(g.wx, g.wy, g.yaw, _St.NAV)
-            self._stat("GOAL_SELECTED")
+            self._transition("SELECT_GOAL", "valid_frontier_found")
+            self._transition("SEND_GOAL")
             return
 
         if self._st == _St.RETURN_HOME:
-            self._stat("RETURNING_HOME")
+            self._transition("RETURN_HOME")
             if self._home_pose is None:
-                self._done("EXPLORATION_COMPLETE")
+                self._done("DONE")
                 return
             hx, hy, hyaw = self._home_pose
-            self.get_logger().info(f"RETURN_HOME_NAV goal=({hx:.2f},{hy:.2f})")
+            ps = self._pose_to_stamped(hx, hy, hyaw)
+            self._pub_return_goal.publish(ps)
+            self.get_logger().info(
+                f"RETURN_HOME_GOAL_SENT map=({hx:.2f},{hy:.2f},{hyaw:.2f})"
+            )
             self._send_nav_goal(hx, hy, hyaw, _St.NAV_HOME)
             return
 
@@ -1481,14 +1714,38 @@ class FrontierExplorer(Node):
             self._last_goal = self._pending_goal
             self._pending_goal = None
             if self._st == _St.NAV:
-                self._stat("NAVIGATING")
+                self._transition("NAVIGATING")
             elif self._st == _St.NAV_HOME:
-                self._stat("NAVIGATING_HOME")
+                self._transition("RETURN_HOME")
             return
 
         if self._st == _St.NAV:
             nowm = time.monotonic()
             min_commit = float(self.get_parameter("min_nav_commit_sec").value)
+            pose = self._pose_map()
+            if pose is not None and self._nav_progress_xy is not None:
+                prog = math.hypot(pose[0] - self._nav_progress_xy[0], pose[1] - self._nav_progress_xy[1])
+                yprog = 0.0
+                if self._nav_progress_yaw is not None:
+                    yprog = abs(_norm(pose[2] - self._nav_progress_yaw))
+                if prog >= float(self.get_parameter("min_progress_m").value) or yprog >= float(
+                    self.get_parameter("min_yaw_progress_rad").value
+                ):
+                    self._nav_progress_xy = (pose[0], pose[1])
+                    self._nav_progress_yaw = pose[2]
+                    self._nav_progress_t0 = nowm
+                elif nowm - self._nav_progress_t0 >= float(
+                    self.get_parameter("stuck_timeout_sec").value
+                ) and nowm - self._nav_started_at >= min_commit:
+                    lg = self.get_logger()
+                    gxy = self._last_goal or (0.0, 0.0)
+                    lg.warn(
+                        f"STUCK_DETECTED goal=({gxy[0]:.2f},{gxy[1]:.2f}) progress={prog:.2f}m "
+                        f"timeout={float(self.get_parameter('stuck_timeout_sec').value):.1f}s"
+                    )
+                    lg.info("CANCEL_NAV2_GOAL")
+                    self._cancel_nav_stuck("no_progress_during_navigation")
+                    return
             if nowm - self._nav_started_at < min_commit:
                 pass
             else:
@@ -1522,14 +1779,14 @@ class FrontierExplorer(Node):
                         self._schedule_next_goal_pick(pause)
                         self._st = _St.PAUSE
                         self._goal_deadline = time.monotonic() + pause
-                        self._stat("GOAL_SUCCESS_TOO_EARLY")
+                        self._transition("GOAL_REACHED", "too_early")
                         return
                     self._fail_streak = 0
                     pause = float(self.get_parameter("min_pause_after_success_sec").value)
                     self._schedule_next_goal_pick(pause)
                     self._st = _St.PAUSE
                     self._goal_deadline = time.monotonic() + pause
-                    self._stat("GOAL_SUCCEEDED")
+                    self._transition("GOAL_REACHED")
                     self.get_logger().info(
                         f"GOAL_SUCCEEDED moved={moved:.2f}m pause={pause:.1f}s before next pick"
                     )
@@ -1561,19 +1818,24 @@ class FrontierExplorer(Node):
                 st = int(wrapped.status) if wrapped is not None else -1
                 if st == GoalStatus.STATUS_SUCCEEDED:
                     hp = self._home_pose
+                    self.get_logger().info("RETURN_HOME_SUCCESS")
                     self.get_logger().info(
-                        "EXPLORATION_COMPLETE: map explored, robot returned to start "
-                        f"home=({hp[0]:.2f},{hp[1]:.2f}) unknown_fraction="
-                        f"{self._last_unknown_fraction:.3f} — /map ready for reuse"
-                        if hp is not None
-                        else ""
+                        "EXPLORATION_DONE "
+                        f"home=({hp[0]:.2f},{hp[1]:.2f})" if hp is not None else ""
                     )
-                    self._done("EXPLORATION_COMPLETE")
+                    self._done("DONE")
                     return
-                self.get_logger().warn(
-                    f"Return-home Nav2 failed (status={st}); finishing anyway"
-                )
-                self._done("EXPLORATION_COMPLETE")
+                if not self._return_home_retry and self._home_pose is not None:
+                    self._return_home_retry = True
+                    hx, hy, hyaw = self._home_pose
+                    tol = float(self.get_parameter("return_home_retry_tolerance_m").value)
+                    self.get_logger().warn(
+                        f"RETURN_HOME failed status={st} — retry with tolerance {tol:.2f}m"
+                    )
+                    self._send_nav_goal(hx, hy, hyaw, _St.NAV_HOME)
+                    return
+                self.get_logger().error("RETURN_HOME_FAILED")
+                self._done("RETURN_HOME_FAILED")
                 return
             if time.monotonic() > self._goal_deadline:
                 if self._goal_handle is not None:
@@ -1591,6 +1853,7 @@ class FrontierExplorer(Node):
             if time.monotonic() < self._goal_deadline:
                 return
             self._pause_is_no_goal_retry = False
+            self._select_entered_at = 0.0
             self._st = _St.SELECT
             return
 
