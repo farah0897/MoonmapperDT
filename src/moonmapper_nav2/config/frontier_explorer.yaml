@@ -15,13 +15,16 @@ frontier_explorer:
     min_frontier_cluster_size: 5
     min_goal_distance: 0.45
     max_goal_distance: 5.0
-    max_goal_distance_stage_m: 2.5
+    # Must be >= desired range: _pick_goal uses min(max_goal_distance, max_goal_distance_stage_m).
+    max_goal_distance_stage_m: 5.0
     goal_timeout_sec: 120.0
     occupied_threshold: 65
     free_threshold: 0
     unknown_value: -1
     unknown_as_blocked_in_planner_grid: true
     goal_inflation_radius_m: 0.35
+    bfs_goal_inflation_radius_m: 0.25
+    min_reachable_cells_for_bfs: 500
     retreat_from_frontier_steps: 3
     blacklist_radius: 0.55
     blacklist_timeout_sec: 120.0
@@ -36,7 +39,7 @@ frontier_explorer:
     require_cmd_vel_subscriber: true
     require_map_publisher_for_ready: false
     wait_log_interval_sec: 12.0
-    integrated_initial_spin: false
+    integrated_initial_spin: true
     initial_spin_min_duration_sec: 1.5
     initial_spin_max_duration_sec: 40.0
     initial_spin_angular_z: 0.28
@@ -47,7 +50,7 @@ frontier_explorer:
     bfs_seed_search_radius_m: 3.0
     bfs_seed_search_step_m: 0.25
     allow_robot_seed_clearing: true
-    robot_seed_clear_radius_m: 0.25
+    robot_seed_clear_radius_m: 0.35
     # When no frontier/seed/goal: polite PAUSE retries before counting toward max_rescan_cycles.
     retry_when_no_frontier: true
     no_frontier_retry_delay_sec: 5.0

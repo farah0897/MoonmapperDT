@@ -192,13 +192,19 @@ def _bfs_mask(
 
 def build_bfs_seed_radii_m(max_m: float, step_m: float) -> Tuple[float, ...]:
     checkpoints = [0.25, 0.5, 1.0, 1.5, 2.0, 3.0]
+    max_m = float(max(max_m, 0.0))
     rings = {float(r) for r in checkpoints if r <= max_m + 1e-9}
     step = float(max(step_m, 0.05))
     cur = step
     while cur <= max_m + 1e-9:
         rings.add(round(cur, 4))
         cur += step
-    return tuple(sorted(rings))
+    out = tuple(sorted(rings))
+    if out:
+        return out
+    if max_m <= 0.0:
+        return (0.25,)
+    return tuple(sorted({min(0.25, max_m), max_m}))
 
 
 def count_raw_frontier_cells(
@@ -260,8 +266,38 @@ def global_nearest_free_cell(
     return best, best_d
 
 
-def find_nearest_bfs_seed(
-    robot_ixy: Tuple[int, int],
+def _grid_bounds_for_disk(
+    rx: float,
+    ry: float,
+    rd: float,
+    ox: float,
+    oy: float,
+    res: float,
+    w: int,
+    h: int,
+    margin_cells: int,
+) -> Tuple[int, int, int, int]:
+    """Inclusive mx/my bounds covering all cells whose centers can lie within rd of (rx,ry)."""
+    res = max(float(res), 1e-9)
+    mx_lo = int(math.ceil((rx - rd - ox) / res - 0.5 - 1e-9))
+    mx_hi = int(math.floor((rx + rd - ox) / res - 0.5 + 1e-9))
+    my_lo = int(math.ceil((ry - rd - oy) / res - 0.5 - 1e-9))
+    my_hi = int(math.floor((ry + rd - oy) / res - 0.5 + 1e-9))
+    m = max(0, margin_cells)
+    mx_lo -= m
+    mx_hi += m
+    my_lo -= m
+    my_hi += m
+    mx_lo = max(0, mx_lo)
+    mx_hi = min(w - 1, mx_hi)
+    my_lo = max(0, my_lo)
+    my_hi = min(h - 1, my_hi)
+    if mx_lo > mx_hi or my_lo > my_hi:
+        return 0, w - 1, 0, h - 1
+    return mx_lo, mx_hi, my_lo, my_hi
+
+
+def global_nearest_passable_cell(
     rx: float,
     ry: float,
     passable_bfs: Sequence[bool],
@@ -270,17 +306,87 @@ def find_nearest_bfs_seed(
     ox: float,
     oy: float,
     res: float,
+) -> Tuple[Optional[Tuple[int, int]], float]:
+    """Nearest cell with passable_bfs True (Euclidean distance to cell center in map plane)."""
+    best: Optional[Tuple[int, int]] = None
+    best_d = 1e18
+    for my in range(h):
+        for mx in range(w):
+            i = _idx(mx, my, w)
+            if not passable_bfs[i]:
+                continue
+            wx = ox + (mx + 0.5) * res
+            wy = oy + (my + 0.5) * res
+            d = math.hypot(wx - rx, wy - ry)
+            if d < best_d:
+                best_d = d
+                best = (mx, my)
+    if best is None:
+        return None, 0.0
+    return best, best_d
+
+
+def global_nearest_passable_known_free_cell(
+    rx: float,
+    ry: float,
+    data: Sequence[int],
+    passable_bfs: Sequence[bool],
+    w: int,
+    h: int,
+    ox: float,
+    oy: float,
+    res: float,
+    unknown_value: int,
+    free_threshold: int,
+    occupied_threshold: int,
+) -> Tuple[Optional[Tuple[int, int]], float]:
+    """Nearest passable_bfs cell that is also known-free in occupancy (not unknown overlay-only)."""
+    best: Optional[Tuple[int, int]] = None
+    best_d = 1e18
+    for my in range(h):
+        for mx in range(w):
+            i = _idx(mx, my, w)
+            if not passable_bfs[i]:
+                continue
+            v = int(data[i])
+            if not _is_free(v, free_threshold, occupied_threshold, unknown_value):
+                continue
+            wx = ox + (mx + 0.5) * res
+            wy = oy + (my + 0.5) * res
+            d = math.hypot(wx - rx, wy - ry)
+            if d < best_d:
+                best_d = d
+                best = (mx, my)
+    if best is None:
+        return None, 0.0
+    return best, best_d
+
+
+def find_nearest_bfs_seed(
+    robot_ixy: Tuple[int, int],
+    rx: float,
+    ry: float,
+    data: Sequence[int],
+    passable_bfs: Sequence[bool],
+    w: int,
+    h: int,
+    ox: float,
+    oy: float,
+    res: float,
+    unknown_value: int,
+    free_threshold: int,
+    occupied_threshold: int,
     max_radius_m: float,
     step_m: float,
 ) -> Tuple[Optional[Tuple[int, int]], float, str]:
-    """Nearest cell with passable_bfs True inside expanding Euclidean discs (radii meters)."""
-    rmx, rmy = robot_ixy
+    """Nearest known-free + passable_bfs cell inside expanding Euclidean discs."""
+    _ = robot_ixy
     for rd in build_bfs_seed_radii_m(max_radius_m, step_m):
         best_d = 1e18
         best: Optional[Tuple[int, int]] = None
-        r_cells = int(rd / max(res, 1e-9)) + 3
-        for my in range(max(0, rmy - r_cells), min(h, rmy + r_cells + 1)):
-            for mx in range(max(0, rmx - r_cells), min(w, rmx + r_cells + 1)):
+        mx_lo, mx_hi, my_lo, my_hi = _grid_bounds_for_disk(rx, ry, rd, ox, oy, res, w, h, 1)
+        for my in range(my_lo, my_hi + 1):
+            for mx in range(mx_lo, mx_hi + 1):
                 wc_x = ox + (mx + 0.5) * res
                 wc_y = oy + (my + 0.5) * res
                 dm = math.hypot(wc_x - rx, wc_y - ry)
@@ -289,12 +395,19 @@ def find_nearest_bfs_seed(
                 idx = _idx(mx, my, w)
                 if not passable_bfs[idx]:
                     continue
+                v = int(data[idx])
+                if not _is_free(v, free_threshold, occupied_threshold, unknown_value):
+                    continue
                 if dm < best_d:
                     best_d = dm
                     best = (mx, my)
         if best is not None:
-            return best, best_d, "nearest_free_radius"
+            return best, best_d, "nearest_known_free_radius"
     return None, 0.0, "none"
+
+
+def _count_reachable(reach: Sequence[bool]) -> int:
+    return sum(1 for x in reach if x)
 
 
 def apply_robot_footprint_clearing(
@@ -337,24 +450,44 @@ def resolve_bfs_seed_and_masks(
     occ_th: int,
     bfs_seed_radius_m: float,
     bfs_seed_step_m: float,
+    min_reachable_cells: int = 500,
 ) -> Tuple[Optional[Tuple[int, int]], List[bool], List[bool], float, str]:
     rx, ry = robot_xy
-    _ = data, unknown_val, free_th, occ_th
     seed, sd_m, smeth = find_nearest_bfs_seed(
         robot_ixy,
         rx,
         ry,
+        data,
         passable_bfs_main,
         w,
         h,
         ox,
         oy,
         res,
+        unknown_val,
+        free_th,
+        occ_th,
         bfs_seed_radius_m,
         bfs_seed_step_m,
     )
+    if seed is None:
+        gp, gd = global_nearest_passable_known_free_cell(
+            rx, ry, data, passable_bfs_main, w, h, ox, oy, res, unknown_val, free_th, occ_th
+        )
+        if gp is not None:
+            seed, sd_m, smeth = gp, gd, "global_nearest_passable_known_free"
     rm = _bfs_mask(seed, passable_bfs_main, w, h)
     rs = _bfs_mask(seed, passable_bfs_staging, w, h)
+    if seed is not None and _count_reachable(rm) < min_reachable_cells:
+        gp, gd = global_nearest_passable_known_free_cell(
+            rx, ry, data, passable_bfs_main, w, h, ox, oy, res, unknown_val, free_th, occ_th
+        )
+        if gp is not None and gp != seed:
+            rm_try = _bfs_mask(gp, passable_bfs_main, w, h)
+            if _count_reachable(rm_try) > _count_reachable(rm):
+                seed, sd_m, smeth = gp, gd, "seed_reseed_low_reach"
+                rm = rm_try
+                rs = _bfs_mask(seed, passable_bfs_staging, w, h)
     return seed, rm, rs, sd_m, smeth
 
 
@@ -413,6 +546,100 @@ def _blacklisted(wx: float, wy: float, blacklist: Sequence[Tuple[float, float, f
     return False
 
 
+def _approach_cell_ok(
+    gix: int,
+    giy: int,
+    data: Sequence[int],
+    w: int,
+    h: int,
+    passable: Sequence[bool],
+    reachable_main_mask: Sequence[bool],
+    occ_th: int,
+    unknown_val: int,
+    free_th: int,
+) -> Optional[str]:
+    if gix < 0 or giy < 0 or gix >= w or giy >= h:
+        return "goal_out_of_bounds"
+    gi = _idx(gix, giy, w)
+    v = int(data[gi])
+    if _is_unknown(v, unknown_val):
+        return "unknown_or_not_free"
+    if _is_occupied(v, occ_th):
+        return "occupied"
+    if not passable[gi]:
+        return "not_passable"
+    if gi >= len(reachable_main_mask) or not reachable_main_mask[gi]:
+        return "not_reachable"
+    _ = free_th
+    return None
+
+
+def pick_cluster_approach_cell(
+    cl: FrontierCluster,
+    data: Sequence[int],
+    w: int,
+    h: int,
+    passable: Sequence[bool],
+    reachable_main_mask: Sequence[bool],
+    robot_xy: Tuple[float, float],
+    robot_ixy: Optional[Tuple[int, int]],
+    ox: float,
+    oy: float,
+    res: float,
+    occ_th: int,
+    free_th: int,
+    unknown_val: int,
+    blacklist: Sequence[Tuple[float, float, float]],
+    blacklist_radius: float,
+    min_robot_dist_m: float,
+    max_stage_dist_m: float,
+    retreat_steps: int,
+) -> Tuple[Optional[Tuple[int, int]], str]:
+    """Pick goal cell from cluster: known-free, passable, reachable; prefer cells nearer robot."""
+    rx, ry = robot_xy
+    if robot_ixy is not None:
+        rfx = float(robot_ixy[0]) + 0.5
+        rfy = float(robot_ixy[1]) + 0.5
+    else:
+        rfx = (rx - ox) / res
+        rfy = (ry - oy) / res
+
+    ranked: List[Tuple[float, int, int]] = []
+    for mx, my in cl.cells:
+        wx = ox + (mx + 0.5) * res
+        wy = oy + (my + 0.5) * res
+        ranked.append((math.hypot(wx - rx, wy - ry), mx, my))
+    ranked.sort(key=lambda t: t[0])
+
+    for _dist, mx, my in ranked:
+        vx = rfx - (mx + 0.5)
+        vy = rfy - (my + 0.5)
+        norm = math.hypot(vx, vy) or 1.0
+        vx /= norm
+        vy /= norm
+        gx, gy = float(mx), float(my)
+        max_walk = int(math.ceil(norm)) + max(0, retreat_steps) + 12
+        for step_i in range(max_walk + 1):
+            gix, giy = int(round(gx)), int(round(gy))
+            method = "cluster_walk" if step_i > 0 else "cluster_search"
+            if step_i > 0 and step_i <= retreat_steps:
+                method = "cluster_search_retreat"
+            rej = _approach_cell_ok(
+                gix, giy, data, w, h, passable, reachable_main_mask, occ_th, unknown_val, free_th
+            )
+            if rej is None:
+                wx = ox + (gix + 0.5) * res
+                wy = oy + (giy + 0.5) * res
+                d = math.hypot(wx - rx, wy - ry)
+                if min_robot_dist_m <= d <= max_stage_dist_m and not _blacklisted(
+                    wx, wy, blacklist, blacklist_radius
+                ):
+                    return (gix, giy), method
+            gx += vx
+            gy += vy
+    return None, "no_cluster_approach"
+
+
 def validate_and_build_goal(
     cl: FrontierCluster,
     data: Sequence[int],
@@ -457,50 +684,34 @@ def validate_and_build_goal(
     cwx = ox + (ccx + 0.5) * res
     cwy = oy + (ccy + 0.5) * res
 
-    if robot_ixy is not None:
-        rfx = float(robot_ixy[0]) + 0.5
-        rfy = float(robot_ixy[1]) + 0.5
-    else:
-        rfx = (rx - ox) / res
-        rfy = (ry - oy) / res
-
-    gx, gy = float(ccx), float(ccy)
-    vx = ccx - rfx
-    vy = ccy - rfy
-    norm = math.hypot(vx, vy) or 1.0
-    vx /= norm
-    vy /= norm
-    for _ in range(max(0, retreat_steps)):
-        gx -= vx
-        gy -= vy
-
-    gix, giy = int(round(gx)), int(round(gy))
-    if gix < 0 or giy < 0 or gix >= w or giy >= h:
-        return None, RejectReason.NO_APPROACH_CELL, "goal_out_of_bounds"
-    gi = _idx(gix, giy, w)
-    v = int(data[gi])
-    if _is_unknown(v, unknown_val):
-        return None, RejectReason.NO_APPROACH_CELL, "unknown_or_not_free"
-    if _is_occupied(v, occ_th):
-        return None, RejectReason.NO_APPROACH_CELL, "occupied"
-    if not passable[gi]:
-        return None, RejectReason.NO_APPROACH_CELL, "not_passable"
-    if gi >= len(reachable_main_mask) or not reachable_main_mask[gi]:
-        return None, RejectReason.NO_APPROACH_CELL, "not_reachable"
-
+    picked, method = pick_cluster_approach_cell(
+        cl,
+        data,
+        w,
+        h,
+        passable,
+        reachable_main_mask,
+        robot_xy,
+        robot_ixy,
+        ox,
+        oy,
+        res,
+        occ_th,
+        free_th,
+        unknown_val,
+        blacklist,
+        blacklist_radius,
+        min_robot_dist_m,
+        max_stage_dist_m,
+        retreat_steps,
+    )
+    if picked is None:
+        return None, RejectReason.NO_APPROACH_CELL, method
+    gix, giy = picked
     wx = ox + (gix + 0.5) * res
     wy = oy + (giy + 0.5) * res
-    d = math.hypot(wx - rx, wy - ry)
-    if d < min_robot_dist_m:
-        return None, RejectReason.NO_APPROACH_CELL, "too_close"
-    if d > max_stage_dist_m:
-        return None, RejectReason.NO_APPROACH_CELL, "too_far"
-    if _blacklisted(wx, wy, blacklist, blacklist_radius):
-        return None, RejectReason.NO_APPROACH_CELL, "blacklisted"
-    _ = free_th
 
     yaw = math.atan2(cwy - wy, cwx - wx)
-    method = "retreat" if retreat_steps > 0 else "direct"
     return (
         ValidatedGoal(
             wx=wx,

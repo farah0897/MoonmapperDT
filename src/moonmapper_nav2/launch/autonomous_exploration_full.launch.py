@@ -1,6 +1,9 @@
 # Copyright 2026 MoonMapper — autonomous Earth/Moon exploration orchestration (V1)
 #
-# Debug / health (run in separate terminals after launch):
+# Debug / health (run in separate terminals while launch is running):
+#   ros2 node list | grep -E 'controller_server|planner_server|bt_navigator|frontier_explorer'
+#   ros2 lifecycle get /controller_server
+#   ros2 topic info /frontier_explorer/current_goal
 #   ros2 topic echo /map --once
 #   ros2 run tf2_ros tf2_echo map odom
 #   ros2 run tf2_ros tf2_echo odom base_footprint

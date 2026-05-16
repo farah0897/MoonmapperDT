@@ -150,7 +150,9 @@ class FrontierExplorer(Node):
         d(self, "bfs_seed_search_radius_m", 3.0)
         d(self, "bfs_seed_search_step_m", 0.25)
         d(self, "allow_robot_seed_clearing", True)
-        d(self, "robot_seed_clear_radius_m", 0.25)
+        d(self, "robot_seed_clear_radius_m", 0.35)
+        d(self, "bfs_goal_inflation_radius_m", 0.25)
+        d(self, "min_reachable_cells_for_bfs", 500)
         d(self, "retry_when_no_frontier", True)
         d(self, "no_frontier_retry_delay_sec", 5.0)
         d(self, "max_no_frontier_retries", 0)
@@ -434,34 +436,27 @@ class FrontierExplorer(Node):
         clusters = collect_frontier_clusters(data, w, h, unk, free, occ, mins)
         n_cl = len(clusters)
 
+        unk_blocked = bool(self.get_parameter("unknown_as_blocked_in_planner_grid").value)
+        goal_infl = float(self.get_parameter("goal_inflation_radius_m").value)
+        bfs_infl = float(self.get_parameter("bfs_goal_inflation_radius_m").value)
         passable, _ = build_passable_mask(
-            data,
-            w,
-            h,
-            unk,
-            occ,
-            free,
-            bool(self.get_parameter("unknown_as_blocked_in_planner_grid").value),
-            float(self.get_parameter("goal_inflation_radius_m").value),
-            res,
+            data, w, h, unk, occ, free, unk_blocked, goal_infl, res
+        )
+        pass_bfs, _ = build_passable_mask(
+            data, w, h, unk, occ, free, unk_blocked, bfs_infl, res
         )
         p_st = passable
+        pass_st_bfs = list(pass_bfs)
         if bool(self.get_parameter("enable_staging_goal").value):
+            st_infl = goal_infl + float(self.get_parameter("staging_clearance_m").value)
             p_st, _ = build_passable_mask(
-                data,
-                w,
-                h,
-                unk,
-                occ,
-                free,
-                bool(self.get_parameter("unknown_as_blocked_in_planner_grid").value),
-                float(self.get_parameter("goal_inflation_radius_m").value)
+                data, w, h, unk, occ, free, unk_blocked, st_infl, res
+            )
+            pass_st_bfs, _ = build_passable_mask(
+                data, w, h, unk, occ, free, unk_blocked, bfs_infl
                 + float(self.get_parameter("staging_clearance_m").value),
                 res,
             )
-
-        pass_bfs = list(passable)
-        pass_st_bfs = list(p_st)
         used_clear = False
         if bool(self.get_parameter("allow_robot_seed_clearing").value):
             cr = float(self.get_parameter("robot_seed_clear_radius_m").value)
@@ -476,6 +471,7 @@ class FrontierExplorer(Node):
         robot_ixy = world_to_map(rx, ry, ox, oy, res)
         bfs_r = float(self.get_parameter("bfs_seed_search_radius_m").value)
         bfs_step = float(self.get_parameter("bfs_seed_search_step_m").value)
+        min_reach = int(self.get_parameter("min_reachable_cells_for_bfs").value)
         seed, rm, rs, sd_m, smeth = resolve_bfs_seed_and_masks(
             robot_ixy,
             (rx, ry),
@@ -492,7 +488,22 @@ class FrontierExplorer(Node):
             occ,
             bfs_r,
             bfs_step,
+            min_reach,
         )
+        reach_bfs = sum(1 for x in rm if x)
+        reach_strict = sum(1 for i, p in enumerate(passable) if p and i < len(rm) and rm[i])
+        lg.info(
+            f"REACH_COUNTS reach_bfs={reach_bfs} reach_strict={reach_strict} "
+            f"bfs_inflation_m={bfs_infl:.2f} goal_inflation_m={goal_infl:.2f}"
+        )
+        if seed is not None and smeth in (
+            "global_nearest_passable_known_free",
+            "seed_reseed_low_reach",
+        ):
+            lg.info(
+                f"SEED_FALLBACK {smeth} cell={seed} distance_m={sd_m:.2f}m "
+                f"reach_bfs={reach_bfs}"
+            )
         lg.info(
             format_reachability_debug_line(
                 (rx, ry),
@@ -524,7 +535,8 @@ class FrontierExplorer(Node):
                 if gf is not None:
                     lg.info(
                         f"nearest_free_global cell={gf} distance_m={gd:.2f} "
-                        f"(map has free cells but none reachable as passable_bfs near robot)"
+                        "(raw occupancy free per MAP_STATS; may still be blocked in passable "
+                        "mask after inflation — use global_nearest_passable_bfs / REACHABILITY for planner graph)"
                     )
             elif free_c == 0:
                 lg.warning("no_free_cells: MAP_STATS free_count=0")
@@ -556,6 +568,7 @@ class FrontierExplorer(Node):
         self._prune_bl()
         br = float(self.get_parameter("blacklist_radius").value)
         min_d = float(self.get_parameter("min_goal_distance").value)
+        # Centroid distance band: min of the two params (staging name); raise both in YAML to allow farther goals.
         max_d = min(
             float(self.get_parameter("max_goal_distance").value),
             float(self.get_parameter("max_goal_distance_stage_m").value),
@@ -670,7 +683,7 @@ class FrontierExplorer(Node):
         try:
             self._tick_impl()
         except Exception:
-            self.get_logger().exception("frontier_explorer tick error")
+            self.get_logger().error("frontier_explorer tick error", exc_info=True)
             self._zero()
             self._done("EXCEPTION")
 
@@ -818,6 +831,10 @@ class FrontierExplorer(Node):
             self._lc_fut = None
             self._st = _St.SELECT
             self._stat("NAV2_ACTIVE")
+            ps = PoseStamped()
+            ps.header.frame_id = str(self.get_parameter("map_frame").value)
+            ps.header.stamp = self.get_clock().now().to_msg()
+            self._pub_goal.publish(ps)
             return
 
         if self._st == _St.SELECT:
