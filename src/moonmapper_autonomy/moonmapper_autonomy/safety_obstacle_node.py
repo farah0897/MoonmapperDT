@@ -28,6 +28,7 @@ class SafetyObstacleNode(Node):
         self.declare_parameter("scan_topic", "/scan")
         self.declare_parameter("scan_timeout_sec", 0.5)
         self.declare_parameter("allow_reverse_when_blocked", True)
+        self.declare_parameter("reverse_speed_when_blocked", 0.12)
         self.declare_parameter("publish_safety_debug", True)
         self.declare_parameter("debug_log_period_sec", 2.0)
 
@@ -39,6 +40,9 @@ class SafetyObstacleNode(Node):
         self._scan_timeout = float(self.get_parameter("scan_timeout_sec").value)
         self._allow_rev = bool(
             self.get_parameter("allow_reverse_when_blocked").value
+        )
+        self._reverse_speed = abs(
+            float(self.get_parameter("reverse_speed_when_blocked").value)
         )
         self._pub_debug = bool(self.get_parameter("publish_safety_debug").value)
         self._debug_period = float(self.get_parameter("debug_log_period_sec").value)
@@ -181,7 +185,9 @@ class SafetyObstacleNode(Node):
         if blocked:
             lx = float(raw.linear.x)
             if lx > 0.0:
-                safe.linear.x = 0.0
+                safe.linear.x = (
+                    -self._reverse_speed if self._allow_rev else 0.0
+                )
             elif lx < 0.0 and self._allow_rev:
                 safe.linear.x = lx
             else:

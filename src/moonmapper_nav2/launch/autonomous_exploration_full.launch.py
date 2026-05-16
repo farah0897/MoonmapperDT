@@ -1,6 +1,9 @@
 # Copyright 2026 MoonMapper — autonomous Earth/Moon exploration orchestration (V1)
 #
-# Debug / health (run in separate terminals while launch is running):
+# Debug / health — run in a SECOND terminal WHILE this launch is still running:
+#   source install/setup.bash
+#   ros2 run moonmapper_nav2 check_autonomous_exploration_stack.sh
+# Or manually:
 #   ros2 node list | grep -E 'controller_server|planner_server|bt_navigator|frontier_explorer'
 #   ros2 lifecycle get /controller_server
 #   ros2 topic info /frontier_explorer/current_goal
@@ -327,7 +330,7 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("initial_spin", default_value="true"),
             DeclareLaunchArgument("delete_rtabmap_db", default_value="false"),
             DeclareLaunchArgument("navigation_stack_delay", default_value="12.0"),
-            DeclareLaunchArgument("explorer_extra_delay_sec", default_value="5.0"),
+            DeclareLaunchArgument("explorer_extra_delay_sec", default_value="8.0"),
             DeclareLaunchArgument("params_file", default_value=default_params),
             DeclareLaunchArgument("rtabmap_database_path", default_value=default_db),
             DeclareLaunchArgument("map_topic", default_value="/map"),

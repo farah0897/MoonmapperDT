@@ -41,10 +41,13 @@ from moonmapper_nav2.frontier_grid import (
     RejectReason,
     ValidatedGoal,
     apply_robot_footprint_clearing,
+    bridge_passable_bfs_to_known_free,
+    build_goal_reach_mask,
     build_passable_mask,
     collect_frontier_clusters,
     count_raw_frontier_cells,
     format_reachability_debug_line,
+    format_strict_mask_debug,
     global_nearest_free_cell,
     resolve_bfs_seed_and_masks,
     score_cluster_distance,
@@ -125,7 +128,16 @@ class FrontierExplorer(Node):
         d(self, "free_threshold", 0)
         d(self, "unknown_value", -1)
         d(self, "unknown_as_blocked_in_planner_grid", True)
-        d(self, "goal_inflation_radius_m", 0.35)
+        d(self, "goal_inflation_radius_m", 0.15)
+        d(self, "bfs_goal_inflation_radius_m", 0.10)
+        d(self, "approach_search_radius_min_m", 0.2)
+        d(self, "approach_search_radius_max_m", 1.5)
+        d(self, "allow_frontier_adjacent_unknown", True)
+        d(self, "require_strict_reachability_for_goal", False)
+        d(self, "require_passable_for_approach", False)
+        d(self, "frontier_neighbor_fallback_m", 1.0)
+        d(self, "min_occupied_clearance_m", 0.15)
+        d(self, "stuck_blocked_cancel_sec", 2.5)
         d(self, "retreat_from_frontier_steps", 3)
         d(self, "blacklist_radius", 0.55)
         d(self, "blacklist_timeout_sec", 120.0)
@@ -134,6 +146,7 @@ class FrontierExplorer(Node):
         d(self, "publish_markers", True)
         d(self, "start_delay_sec", 5.0)
         d(self, "nav2_ready_timeout_sec", 120.0)
+        d(self, "nav2_action_wait_sec", 2.0)
         d(self, "nav2_debug_log_interval_sec", 2.0)
         d(self, "wait_for_nav2", True)
         d(self, "require_nav_lifecycle_active", True)
@@ -145,13 +158,14 @@ class FrontierExplorer(Node):
         d(self, "initial_spin_max_duration_sec", 40.0)
         d(self, "initial_spin_angular_z", 0.28)
         d(self, "initial_spin_target_rad", 6.28)
-        d(self, "map_settle_after_spin_sec", 2.5)
+        d(self, "map_settle_after_spin_sec", 0.5)
+        d(self, "explore_immediately_after_spin", True)
+        d(self, "bfs_bridge_known_free_radius_m", 2.5)
         d(self, "nearest_seed_search_radius_m", 0.6)
         d(self, "bfs_seed_search_radius_m", 3.0)
         d(self, "bfs_seed_search_step_m", 0.25)
         d(self, "allow_robot_seed_clearing", True)
         d(self, "robot_seed_clear_radius_m", 0.35)
-        d(self, "bfs_goal_inflation_radius_m", 0.25)
         d(self, "min_reachable_cells_for_bfs", 500)
         d(self, "retry_when_no_frontier", True)
         d(self, "no_frontier_retry_delay_sec", 5.0)
@@ -193,11 +207,13 @@ class FrontierExplorer(Node):
         )
         self._nav_wait_t0 = 0.0
         self._nav_log_t0 = 0.0
+        self._nav_action_wait_logged = False
         self._wait_log_t0 = 0.0
         self._lc_order: Tuple[str, ...] = ("controller_server", "planner_server", "bt_navigator")
         self._lc_clients: Dict[str, object] = {}
         self._lc_idx = 0
         self._lc_fut: Optional[Future] = None
+        self._obstacle_blocked_since: Optional[float] = None
 
         self._tf = tf2_ros.Buffer(cache_time=Duration(seconds=30.0))
         tf2_ros.TransformListener(self._tf, self, spin_thread=False)
@@ -214,6 +230,13 @@ class FrontierExplorer(Node):
             str(self.get_parameter("map_topic").value),
             self._on_map,
             MAP_QOS,
+            callback_group=self._cb,
+        )
+        self.create_subscription(
+            String,
+            "/obstacle/current_state",
+            self._on_obstacle_state,
+            10,
             callback_group=self._cb,
         )
         for nm in self._lc_order:
@@ -238,6 +261,10 @@ class FrontierExplorer(Node):
             f"map_topic={mt} map_frame={mf} base_frame={bf} cmd_vel_topic={cv} navigate_action={nav}"
         )
         self._stat("STARTING")
+        ps_ad = PoseStamped()
+        ps_ad.header.frame_id = mf
+        ps_ad.header.stamp = self.get_clock().now().to_msg()
+        self._pub_goal.publish(ps_ad)
 
     def _maybe_log_map_robot_diag(self, rx: float, ry: float) -> None:
         """One-shot debug: map extents vs robot pose (helps Nav2 \"out of costmap\" triage)."""
@@ -305,6 +332,28 @@ class FrontierExplorer(Node):
             return True
         t = str(self.get_parameter("cmd_vel_topic").value)
         return self.count_subscribers(t) >= 1
+
+    def _on_obstacle_state(self, msg: String) -> None:
+        if msg.data == "blocked_front":
+            if self._obstacle_blocked_since is None:
+                self._obstacle_blocked_since = time.monotonic()
+        else:
+            self._obstacle_blocked_since = None
+
+    def _cancel_nav_stuck(self, reason: str) -> None:
+        self.get_logger().warn(f"[frontier_explorer] {reason} — cancel goal, blacklist, recover")
+        if self._goal_handle is not None:
+            try:
+                self._goal_handle.cancel_goal_async()
+            except Exception:
+                pass
+        self._goal_handle = None
+        self._result_future = None
+        self._blacklist_goal()
+        self._fail_streak += 1
+        self._obstacle_blocked_since = None
+        self._maybe_recover()
+        self._stat("STUCK_BLOCKED")
 
     def _prune_bl(self) -> None:
         now = time.monotonic()
@@ -468,6 +517,15 @@ class FrontierExplorer(Node):
                 "(local BFS mask only; /map not modified)"
             )
 
+        bridge_r = float(self.get_parameter("bfs_bridge_known_free_radius_m").value)
+        pass_bfs = bridge_passable_bfs_to_known_free(
+            pass_bfs, data, w, h, rx, ry, ox, oy, res, unk, free, occ, bridge_r
+        )
+        if bool(self.get_parameter("enable_staging_goal").value):
+            pass_st_bfs = bridge_passable_bfs_to_known_free(
+                pass_st_bfs, data, w, h, rx, ry, ox, oy, res, unk, free, occ, bridge_r
+            )
+
         robot_ixy = world_to_map(rx, ry, ox, oy, res)
         bfs_r = float(self.get_parameter("bfs_seed_search_radius_m").value)
         bfs_step = float(self.get_parameter("bfs_seed_search_step_m").value)
@@ -496,6 +554,20 @@ class FrontierExplorer(Node):
             f"REACH_COUNTS reach_bfs={reach_bfs} reach_strict={reach_strict} "
             f"bfs_inflation_m={bfs_infl:.2f} goal_inflation_m={goal_infl:.2f}"
         )
+        lg.info(
+            format_strict_mask_debug(data, w, h, passable, pass_bfs, rm, unk, free, occ)
+        )
+        require_strict = bool(
+            self.get_parameter("require_strict_reachability_for_goal").value
+        )
+        goal_reach = build_goal_reach_mask(passable, rm, require_strict)
+        if reach_strict == 0 and reach_bfs > 0 and not require_strict:
+            lg.info("STRICT_REACH_EMPTY: falling back to BFS reachability for V1")
+        approach_min = float(self.get_parameter("approach_search_radius_min_m").value)
+        approach_max = float(self.get_parameter("approach_search_radius_max_m").value)
+        min_occ_clr = float(self.get_parameter("min_occupied_clearance_m").value)
+        req_pass_approach = bool(self.get_parameter("require_passable_for_approach").value)
+        neighbor_fb = float(self.get_parameter("frontier_neighbor_fallback_m").value)
         if seed is not None and smeth in (
             "global_nearest_passable_known_free",
             "seed_reseed_low_reach",
@@ -573,7 +645,6 @@ class FrontierExplorer(Node):
             float(self.get_parameter("max_goal_distance").value),
             float(self.get_parameter("max_goal_distance_stage_m").value),
         )
-        ret = int(self.get_parameter("retreat_from_frontier_steps").value)
         fan_a = self.get_parameter("staging_fan_angles_deg").value
         fan_d = self.get_parameter("staging_fan_distances_m").value
         fa = tuple(float(x) for x in fan_a) if isinstance(fan_a, (list, tuple)) else (0.0,)
@@ -583,9 +654,9 @@ class FrontierExplorer(Node):
         after_blacklist = 0
         after_reachable = 0
         n_blk_rej = 0
-        n_reach_fail = 0
+        reject_summary: Dict[str, int] = {}
 
-        for cl in ranked:
+        for cluster_id, cl in enumerate(ranked):
             ccx, ccy = cl.centroid_map
             cwx = ox + (ccx + 0.5) * res
             cwy = oy + (ccy + 0.5) * res
@@ -598,7 +669,7 @@ class FrontierExplorer(Node):
                 continue
             after_blacklist += 1
 
-            vg, rj, det = validate_and_build_goal(
+            vg, rj, det, _pick_stats = validate_and_build_goal(
                 cl,
                 data,
                 w,
@@ -609,6 +680,7 @@ class FrontierExplorer(Node):
                 oy,
                 res,
                 passable,
+                goal_reach,
                 occ,
                 free,
                 unk,
@@ -616,7 +688,11 @@ class FrontierExplorer(Node):
                 br,
                 min_d,
                 max_d,
-                ret,
+                approach_min,
+                approach_max,
+                min_occ_clr,
+                req_pass_approach,
+                neighbor_fb,
                 float(self.get_parameter("fallback_radius_min_m").value),
                 float(self.get_parameter("fallback_radius_max_m").value),
                 bool(self.get_parameter("enable_staging_goal").value),
@@ -626,11 +702,17 @@ class FrontierExplorer(Node):
                 fd,
                 bool(self.get_parameter("staging_require_free_value_zero").value),
                 p_st,
-                rm,
                 rs,
             )
             if vg is not None:
                 after_reachable += 1
+                dist_robot = math.hypot(vg.wx - rx, vg.wy - ry)
+                lg.info(
+                    f"GOAL_SELECTED cluster_id={cluster_id} approach_cell={vg.approach_ixy} "
+                    f"world=({vg.wx:.2f},{vg.wy:.2f}) dist_robot={dist_robot:.2f}m "
+                    f"method={vg.approach_method}"
+                )
+                lg.info("SENDING_NAV2_GOAL")
                 lg.info(
                     "FRONTIER_DEBUG "
                     f"raw_cells={raw_frontier_cells} clusters={n_cl} after_distance={after_distance} "
@@ -639,17 +721,19 @@ class FrontierExplorer(Node):
                 )
                 self._markers(clusters, vg)
                 return vg, ""
-            if rj is not None:
-                if det == "not_reachable":
-                    n_reach_fail += 1
-                lg.info(f"reject cluster: {rj.value} {det}")
+            key = rj.value if rj is not None else det or "unknown"
+            reject_summary[key] = reject_summary.get(key, 0) + 1
+
+        if reject_summary:
+            parts = " ".join(f"{k}={v}" for k, v in sorted(reject_summary.items()))
+            lg.info(f"CLUSTER_REJECT_SUMMARY: {parts}")
 
         fr_reason = "no_reachable_frontier"
         if after_distance == 0:
             fr_reason = "no_frontier_in_distance_band"
         elif after_blacklist == 0 and n_blk_rej > 0:
             fr_reason = "all_blacklisted"
-        elif after_reachable == 0 and n_reach_fail > 0:
+        elif after_reachable == 0:
             fr_reason = "no_reachable_frontier"
 
         lg.info(
@@ -711,6 +795,17 @@ class FrontierExplorer(Node):
                     self._stat("WAIT_MAP_AFTER_SPIN")
                     return
                 self._map_after_spin = 0.0
+                fast = bool(self.get_parameter("explore_immediately_after_spin").value)
+                if fast and (
+                    not bool(self.get_parameter("wait_for_nav2").value)
+                    or self._nav.server_is_ready()
+                ):
+                    self._lc_idx = 0
+                    self._lc_fut = None
+                    if not bool(self.get_parameter("require_nav_lifecycle_active").value):
+                        self._st = _St.SELECT
+                        self._stat("EXPLORE_AFTER_SPIN")
+                        return
                 self._begin_nav2()
                 return
             if self._map is None or len(self._map.data) == 0:
@@ -792,7 +887,9 @@ class FrontierExplorer(Node):
             if (self._spin_accum >= tgt and (nowt - self._spin_t0) >= mn) or (nowt - self._spin_t0) >= mx:
                 self._zero()
                 self._did_initial_spin = True
-                self._map_after_spin = nowt + float(self.get_parameter("map_settle_after_spin_sec").value)
+                self._map_after_spin = nowt + float(
+                    self.get_parameter("map_settle_after_spin_sec").value
+                )
                 self._st = _St.WAIT_MAP
                 return
 
@@ -813,13 +910,22 @@ class FrontierExplorer(Node):
             if nowm - self._nav_log_t0 >= iv:
                 self._nav_log_t0 = nowm
                 self.get_logger().info(
-                    f"wait Nav2 action={self._nav.server_is_ready()} lc_idx={self._lc_idx}"
+                    f"wait Nav2 action={self._nav.server_is_ready()} lc_idx={self._lc_idx} "
+                    f"(need /navigate_to_pose + lifecycle ACTIVE; check: ros2 action list | grep navigate)"
                 )
-            if not (self._nav.server_is_ready() or self._nav.wait_for_server(timeout_sec=0.0)):
-                self._stat("WAITING_FOR_NAV2")
-                self._lc_idx = 0
-                self._lc_fut = None
-                return
+            action_wait = float(self.get_parameter("nav2_action_wait_sec").value)
+            if not self._nav.server_is_ready():
+                if not self._nav_action_wait_logged:
+                    self.get_logger().info(
+                        f"Blocking up to {action_wait:.1f}s for NavigateToPose action server…"
+                    )
+                    self._nav_action_wait_logged = True
+                if not self._nav.wait_for_server(timeout_sec=action_wait):
+                    self._stat("WAITING_FOR_NAV2")
+                    self._lc_idx = 0
+                    self._lc_fut = None
+                    return
+            self._nav_action_wait_logged = False
             if bool(self.get_parameter("require_nav_lifecycle_active").value):
                 if not self._lc_step():
                     nm = self._lc_order[min(self._lc_idx, len(self._lc_order) - 1)]
@@ -895,6 +1001,11 @@ class FrontierExplorer(Node):
             goal.pose = ps
             self._pending_goal = (g.wx, g.wy)
             self._pub_goal.publish(ps)
+            self.get_logger().info(
+                f"GOAL_SELECTED world=({g.wx:.2f},{g.wy:.2f}) approach={g.approach_ixy} "
+                f"method={g.approach_method}"
+            )
+            self.get_logger().info("SENDING_NAV2_GOAL")
             self._send_future = self._nav.send_goal_async(goal)
             self._st = _St.SEND
             self._stat("GOAL_SELECTED")
@@ -906,6 +1017,9 @@ class FrontierExplorer(Node):
             gh = self._send_future.result()
             self._send_future = None
             if gh is None or not gh.accepted:
+                self.get_logger().warn(
+                    "[frontier_explorer] NavigateToPose rejected (Nav2 not executing goal)"
+                )
                 self._last_goal = self._pending_goal
                 self._pending_goal = None
                 self._blacklist_goal()
@@ -925,6 +1039,13 @@ class FrontierExplorer(Node):
             return
 
         if self._st == _St.NAV:
+            stuck_sec = float(self.get_parameter("stuck_blocked_cancel_sec").value)
+            if (
+                self._obstacle_blocked_since is not None
+                and time.monotonic() - self._obstacle_blocked_since >= stuck_sec
+            ):
+                self._cancel_nav_stuck("front blocked too long during navigation")
+                return
             if self._result_future is not None and self._result_future.done():
                 wrapped = self._result_future.result()
                 self._goal_handle = None

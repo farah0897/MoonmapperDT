@@ -61,8 +61,8 @@ def generate_launch_description() -> LaunchDescription:
                 "camera_info_topic",
                 default_value="/camera/camera/color/camera_info",
             ),
-            DeclareLaunchArgument("safety_stop_distance", default_value="0.48"),
-            DeclareLaunchArgument("safety_front_angle_deg", default_value="40.0"),
+            DeclareLaunchArgument("safety_stop_distance", default_value="0.58"),
+            DeclareLaunchArgument("safety_front_angle_deg", default_value="55.0"),
             DeclareLaunchArgument("safety_scan_timeout_sec", default_value="0.6"),
             LogInfo(
                 msg=(

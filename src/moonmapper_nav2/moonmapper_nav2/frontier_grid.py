@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from enum import Enum
-from typing import List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from moonmapper_nav2.frontier_utils import (
     FrontierCluster,
@@ -19,6 +19,33 @@ from moonmapper_nav2.frontier_utils import (
 
 class RejectReason(str, Enum):
     NO_APPROACH_CELL = "no_approach_cell"
+
+
+@dataclass
+class ApproachPickStats:
+    candidates_total: int = 0
+    rejected_out_of_bounds: int = 0
+    rejected_annulus: int = 0
+    rejected_unknown: int = 0
+    rejected_occupied: int = 0
+    rejected_not_reachable: int = 0
+    rejected_not_passable: int = 0
+    rejected_too_close_obstacle: int = 0
+    rejected_blacklist: int = 0
+    rejected_robot_distance: int = 0
+
+    def summary_line(self) -> str:
+        parts = [
+            f"candidates_total={self.candidates_total}",
+            f"rejected_unknown={self.rejected_unknown}",
+            f"rejected_occupied={self.rejected_occupied}",
+            f"rejected_not_reachable={self.rejected_not_reachable}",
+            f"rejected_not_passable={self.rejected_not_passable}",
+            f"rejected_too_close_obstacle={self.rejected_too_close_obstacle}",
+            f"rejected_blacklist={self.rejected_blacklist}",
+            f"rejected_robot_distance={self.rejected_robot_distance}",
+        ]
+        return " ".join(parts)
 
 
 @dataclass
@@ -410,6 +437,39 @@ def _count_reachable(reach: Sequence[bool]) -> int:
     return sum(1 for x in reach if x)
 
 
+def bridge_passable_bfs_to_known_free(
+    pass_bfs: Sequence[bool],
+    data: Sequence[int],
+    w: int,
+    h: int,
+    rx: float,
+    ry: float,
+    ox: float,
+    oy: float,
+    res: float,
+    unknown_val: int,
+    free_th: int,
+    occ_th: int,
+    radius_m: float,
+) -> List[bool]:
+    """Connect BFS graph to explored known-free cells near the robot (local mask only)."""
+    out = [bool(x) for x in pass_bfs]
+    if radius_m <= 0.0:
+        return out
+    r_cells = int(math.ceil(float(radius_m) / max(res, 1e-9))) + 2
+    mx0, my0 = world_to_map(rx, ry, ox, oy, res)
+    for my in range(max(0, my0 - r_cells), min(h, my0 + r_cells + 1)):
+        for mx in range(max(0, mx0 - r_cells), min(w, mx0 + r_cells + 1)):
+            wx = ox + (mx + 0.5) * res
+            wy = oy + (my + 0.5) * res
+            if math.hypot(wx - rx, wy - ry) > radius_m + 1e-6:
+                continue
+            i = _idx(mx, my, w)
+            if _is_free(int(data[i]), free_th, occ_th, unknown_val) and not out[i]:
+                out[i] = True
+    return out
+
+
 def apply_robot_footprint_clearing(
     passable: Sequence[bool],
     rx: float,
@@ -546,32 +606,144 @@ def _blacklisted(wx: float, wy: float, blacklist: Sequence[Tuple[float, float, f
     return False
 
 
-def _approach_cell_ok(
+def format_strict_mask_debug(
+    data: Sequence[int],
+    w: int,
+    h: int,
+    passable: Sequence[bool],
+    pass_bfs: Sequence[bool],
+    reach_bfs: Sequence[bool],
+    unk: int,
+    free: int,
+    occ: int,
+) -> str:
+    """Per-filter counts showing why reach_strict may be 0 while reach_bfs > 0."""
+    n = w * h
+    reachable_bfs_count = sum(1 for x in reach_bfs if x)
+    after_obstacle_inflation_count = sum(1 for x in pass_bfs if x)
+    after_unknown_clearance_count = 0
+    after_goal_inflation_count = sum(1 for x in passable if x)
+    for i in range(n):
+        if not reach_bfs[i]:
+            continue
+        if _is_free(int(data[i]), free, occ, unk):
+            after_unknown_clearance_count += 1
+    final_reach_strict_count = sum(
+        1 for i in range(n) if passable[i] and reach_bfs[i]
+    )
+    return (
+        "STRICT_MASK_DEBUG "
+        f"reachable_bfs_count={reachable_bfs_count} "
+        f"after_obstacle_inflation_count={after_obstacle_inflation_count} "
+        f"after_unknown_clearance_count={after_unknown_clearance_count} "
+        f"after_goal_inflation_count={after_goal_inflation_count} "
+        f"final_reach_strict_count={final_reach_strict_count}"
+    )
+
+
+def build_goal_reach_mask(
+    passable: Sequence[bool],
+    reach_bfs: Sequence[bool],
+    require_strict: bool,
+) -> List[bool]:
+    """V1: use BFS reach when strict mask is empty or strict reach not required."""
+    n = min(len(passable), len(reach_bfs))
+    reach_strict_count = sum(
+        1 for i in range(n) if passable[i] and reach_bfs[i]
+    )
+    reach_bfs_count = sum(1 for x in reach_bfs if x)
+    if not require_strict or (reach_strict_count == 0 and reach_bfs_count > 0):
+        return [bool(reach_bfs[i]) for i in range(n)]
+    return [bool(passable[i] and reach_bfs[i]) for i in range(n)]
+
+
+def _occupied_clearance_ok(
     gix: int,
     giy: int,
     data: Sequence[int],
     w: int,
     h: int,
-    passable: Sequence[bool],
-    reachable_main_mask: Sequence[bool],
+    occ_th: int,
+    clearance_m: float,
+    res: float,
+) -> bool:
+    if clearance_m <= 0.0:
+        return True
+    r = int(math.ceil(clearance_m / max(res, 1e-9)))
+    for dy in range(-r, r + 1):
+        for dx in range(-r, r + 1):
+            cx, cy = gix + dx, giy + dy
+            if cx < 0 or cy < 0 or cx >= w or cy >= h:
+                continue
+            if _is_occupied(int(data[_idx(cx, cy, w)]), occ_th):
+                return False
+    return True
+
+
+def _validate_approach_candidate(
+    gix: int,
+    giy: int,
+    data: Sequence[int],
+    w: int,
+    h: int,
+    goal_reach_mask: Sequence[bool],
+    passable: Optional[Sequence[bool]],
+    require_passable: bool,
     occ_th: int,
     unknown_val: int,
     free_th: int,
+    min_occupied_clearance_m: float,
+    res: float,
 ) -> Optional[str]:
     if gix < 0 or giy < 0 or gix >= w or giy >= h:
-        return "goal_out_of_bounds"
+        return "out_of_bounds"
     gi = _idx(gix, giy, w)
     v = int(data[gi])
     if _is_unknown(v, unknown_val):
-        return "unknown_or_not_free"
+        return "unknown"
     if _is_occupied(v, occ_th):
         return "occupied"
-    if not passable[gi]:
-        return "not_passable"
-    if gi >= len(reachable_main_mask) or not reachable_main_mask[gi]:
+    if not _is_free(v, free_th, occ_th, unknown_val):
+        return "not_free"
+    if gi >= len(goal_reach_mask) or not goal_reach_mask[gi]:
         return "not_reachable"
+    if require_passable and passable is not None:
+        if gi >= len(passable) or not passable[gi]:
+            return "not_passable"
+    if not _occupied_clearance_ok(
+        gix, giy, data, w, h, occ_th, min_occupied_clearance_m, res
+    ):
+        return "too_close_obstacle"
     _ = free_th
     return None
+
+
+def _cells_in_annulus(
+    cx: float,
+    cy: float,
+    w: int,
+    h: int,
+    ox: float,
+    oy: float,
+    res: float,
+    radius_min_m: float,
+    radius_max_m: float,
+) -> List[Tuple[float, float, int, int]]:
+    """Return (dist_to_centroid_m, wx, wy, mx, my) for map cells in annulus."""
+    r_min_c = int(math.floor(radius_min_m / max(res, 1e-9)))
+    r_max_c = int(math.ceil(radius_max_m / max(res, 1e-9))) + 1
+    mx0 = int(math.floor(cx))
+    my0 = int(math.floor(cy))
+    out: List[Tuple[float, float, int, int]] = []
+    for my in range(max(0, my0 - r_max_c), min(h, my0 + r_max_c + 1)):
+        for mx in range(max(0, mx0 - r_max_c), min(w, mx0 + r_max_c + 1)):
+            wx = ox + (mx + 0.5) * res
+            wy = oy + (my + 0.5) * res
+            d = math.hypot(wx - (ox + (cx + 0.5) * res), wy - (oy + (cy + 0.5) * res))
+            if d < radius_min_m - 1e-6 or d > radius_max_m + 1e-6:
+                continue
+            out.append((d, wx, wy, mx, my))
+    return out
 
 
 def pick_cluster_approach_cell(
@@ -579,10 +751,9 @@ def pick_cluster_approach_cell(
     data: Sequence[int],
     w: int,
     h: int,
-    passable: Sequence[bool],
-    reachable_main_mask: Sequence[bool],
+    goal_reach_mask: Sequence[bool],
+    passable: Optional[Sequence[bool]],
     robot_xy: Tuple[float, float],
-    robot_ixy: Optional[Tuple[int, int]],
     ox: float,
     oy: float,
     res: float,
@@ -592,52 +763,145 @@ def pick_cluster_approach_cell(
     blacklist: Sequence[Tuple[float, float, float]],
     blacklist_radius: float,
     min_robot_dist_m: float,
-    max_stage_dist_m: float,
-    retreat_steps: int,
-) -> Tuple[Optional[Tuple[int, int]], str]:
-    """Pick goal cell from cluster: known-free, passable, reachable; prefer cells nearer robot."""
+    max_robot_dist_m: float,
+    approach_radius_min_m: float,
+    approach_radius_max_m: float,
+    min_occupied_clearance_m: float,
+    require_passable_for_approach: bool,
+) -> Tuple[Optional[Tuple[int, int]], str, ApproachPickStats]:
+    """V1: search known-free reachable cells in annulus around cluster centroid."""
     rx, ry = robot_xy
-    if robot_ixy is not None:
-        rfx = float(robot_ixy[0]) + 0.5
-        rfy = float(robot_ixy[1]) + 0.5
-    else:
-        rfx = (rx - ox) / res
-        rfy = (ry - oy) / res
+    ccx, ccy = cl.centroid_map
+    stats = ApproachPickStats()
+    annulus = _cells_in_annulus(
+        ccx, ccy, w, h, ox, oy, res, approach_radius_min_m, approach_radius_max_m
+    )
+    stats.candidates_total = len(annulus)
+    valid: List[Tuple[float, float, int, int]] = []
+    for _dc, wx, wy, mx, my in annulus:
+        rej = _validate_approach_candidate(
+            mx,
+            my,
+            data,
+            w,
+            h,
+            goal_reach_mask,
+            passable,
+            require_passable_for_approach,
+            occ_th,
+            unknown_val,
+            free_th,
+            min_occupied_clearance_m,
+            res,
+        )
+        if rej is not None:
+            if rej == "unknown":
+                stats.rejected_unknown += 1
+            elif rej == "occupied":
+                stats.rejected_occupied += 1
+            elif rej == "not_reachable":
+                stats.rejected_not_reachable += 1
+            elif rej == "not_passable":
+                stats.rejected_not_passable += 1
+            elif rej == "too_close_obstacle":
+                stats.rejected_too_close_obstacle += 1
+            elif rej == "out_of_bounds":
+                stats.rejected_out_of_bounds += 1
+            continue
+        if _blacklisted(wx, wy, blacklist, blacklist_radius):
+            stats.rejected_blacklist += 1
+            continue
+        dr = math.hypot(wx - rx, wy - ry)
+        if dr < min_robot_dist_m or dr > max_robot_dist_m:
+            stats.rejected_robot_distance += 1
+            continue
+        valid.append((_dc, wx, wy, mx, my))
+    if not valid:
+        return None, "no_cluster_approach", stats
+    valid.sort(key=lambda t: t[0])
+    _dc, _wx, _wy, mx, my = valid[0]
+    return (mx, my), "centroid_annulus", stats
 
-    ranked: List[Tuple[float, int, int]] = []
-    for mx, my in cl.cells:
-        wx = ox + (mx + 0.5) * res
-        wy = oy + (my + 0.5) * res
-        ranked.append((math.hypot(wx - rx, wy - ry), mx, my))
-    ranked.sort(key=lambda t: t[0])
 
-    for _dist, mx, my in ranked:
-        vx = rfx - (mx + 0.5)
-        vy = rfy - (my + 0.5)
-        norm = math.hypot(vx, vy) or 1.0
-        vx /= norm
-        vy /= norm
-        gx, gy = float(mx), float(my)
-        max_walk = int(math.ceil(norm)) + max(0, retreat_steps) + 12
-        for step_i in range(max_walk + 1):
-            gix, giy = int(round(gx)), int(round(gy))
-            method = "cluster_walk" if step_i > 0 else "cluster_search"
-            if step_i > 0 and step_i <= retreat_steps:
-                method = "cluster_search_retreat"
-            rej = _approach_cell_ok(
-                gix, giy, data, w, h, passable, reachable_main_mask, occ_th, unknown_val, free_th
-            )
-            if rej is None:
-                wx = ox + (gix + 0.5) * res
-                wy = oy + (giy + 0.5) * res
-                d = math.hypot(wx - rx, wy - ry)
-                if min_robot_dist_m <= d <= max_stage_dist_m and not _blacklisted(
-                    wx, wy, blacklist, blacklist_radius
+def pick_cluster_neighbor_fallback(
+    cl: FrontierCluster,
+    data: Sequence[int],
+    w: int,
+    h: int,
+    goal_reach_mask: Sequence[bool],
+    passable: Optional[Sequence[bool]],
+    robot_xy: Tuple[float, float],
+    ox: float,
+    oy: float,
+    res: float,
+    occ_th: int,
+    free_th: int,
+    unknown_val: int,
+    blacklist: Sequence[Tuple[float, float, float]],
+    blacklist_radius: float,
+    min_robot_dist_m: float,
+    max_robot_dist_m: float,
+    neighbor_radius_m: float,
+    min_occupied_clearance_m: float,
+    require_passable_for_approach: bool,
+) -> Tuple[Optional[Tuple[int, int]], str, ApproachPickStats]:
+    """Nearest reachable known-free cell within neighbor_radius_m of any frontier cell."""
+    rx, ry = robot_xy
+    stats = ApproachPickStats()
+    r_cells = int(math.ceil(neighbor_radius_m / max(res, 1e-9))) + 1
+    best: Optional[Tuple[float, float, int, int]] = None
+    for fmx, fmy in cl.cells:
+        for my in range(max(0, fmy - r_cells), min(h, fmy + r_cells + 1)):
+            for mx in range(max(0, fmx - r_cells), min(w, fmx + r_cells + 1)):
+                if (mx, my) in cl.cells:
+                    continue
+                stats.candidates_total += 1
+                wx = ox + (mx + 0.5) * res
+                wy = oy + (my + 0.5) * res
+                if math.hypot(wx - (ox + (fmx + 0.5) * res), wy - (oy + (fmy + 0.5) * res)) > (
+                    neighbor_radius_m + 1e-6
                 ):
-                    return (gix, giy), method
-            gx += vx
-            gy += vy
-    return None, "no_cluster_approach"
+                    stats.rejected_annulus += 1
+                    continue
+                rej = _validate_approach_candidate(
+                    mx,
+                    my,
+                    data,
+                    w,
+                    h,
+                    goal_reach_mask,
+                    passable,
+                    require_passable_for_approach,
+                    occ_th,
+                    unknown_val,
+                    free_th,
+                    min_occupied_clearance_m,
+                    res,
+                )
+                if rej is not None:
+                    if rej == "unknown":
+                        stats.rejected_unknown += 1
+                    elif rej == "occupied":
+                        stats.rejected_occupied += 1
+                    elif rej == "not_reachable":
+                        stats.rejected_not_reachable += 1
+                    elif rej == "not_passable":
+                        stats.rejected_not_passable += 1
+                    elif rej == "too_close_obstacle":
+                        stats.rejected_too_close_obstacle += 1
+                    continue
+                if _blacklisted(wx, wy, blacklist, blacklist_radius):
+                    stats.rejected_blacklist += 1
+                    continue
+                dr = math.hypot(wx - rx, wy - ry)
+                if dr < min_robot_dist_m or dr > max_robot_dist_m:
+                    stats.rejected_robot_distance += 1
+                    continue
+                if best is None or dr < best[0]:
+                    best = (dr, wx, wy, mx, my)
+    if best is None:
+        return None, "neighbor_fallback_failed", stats
+    return (best[3], best[4]), "neighbor_fallback", stats
 
 
 def validate_and_build_goal(
@@ -651,14 +915,19 @@ def validate_and_build_goal(
     oy: float,
     res: float,
     passable: Sequence[bool],
+    goal_reach_mask: Sequence[bool],
     occ_th: int,
     free_th: int,
     unknown_val: int,
     blacklist: Sequence[Tuple[float, float, float]],
     blacklist_radius: float,
     min_robot_dist_m: float,
-    max_stage_dist_m: float,
-    retreat_steps: int,
+    max_robot_dist_m: float,
+    approach_radius_min_m: float,
+    approach_radius_max_m: float,
+    min_occupied_clearance_m: float,
+    require_passable_for_approach: bool,
+    neighbor_fallback_m: float,
     _fallback_radius_min_m: float,
     _fallback_radius_max_m: float,
     enable_staging_goal: bool,
@@ -668,31 +937,31 @@ def validate_and_build_goal(
     _staging_fan_distances_m: Optional[Tuple[float, ...]],
     _staging_require_free_value_zero: bool,
     passable_staging: Optional[List[bool]],
-    reachable_main_mask: Sequence[bool],
     reachable_staging_mask: Optional[List[bool]],
-) -> Tuple[Optional[ValidatedGoal], Optional[RejectReason], str]:
+) -> Tuple[Optional[ValidatedGoal], Optional[RejectReason], str, ApproachPickStats]:
     _ = (
+        robot_ixy,
         enable_staging_goal,
         _staging_fan_angles_deg,
         _staging_fan_distances_m,
         _staging_require_free_value_zero,
         passable_staging,
         reachable_staging_mask,
+        _fallback_radius_min_m,
+        _fallback_radius_max_m,
     )
-    rx, ry = robot_xy
     ccx, ccy = cl.centroid_map
     cwx = ox + (ccx + 0.5) * res
     cwy = oy + (ccy + 0.5) * res
 
-    picked, method = pick_cluster_approach_cell(
+    picked, method, stats = pick_cluster_approach_cell(
         cl,
         data,
         w,
         h,
+        goal_reach_mask,
         passable,
-        reachable_main_mask,
         robot_xy,
-        robot_ixy,
         ox,
         oy,
         res,
@@ -702,11 +971,39 @@ def validate_and_build_goal(
         blacklist,
         blacklist_radius,
         min_robot_dist_m,
-        max_stage_dist_m,
-        retreat_steps,
+        max_robot_dist_m,
+        approach_radius_min_m,
+        approach_radius_max_m,
+        min_occupied_clearance_m,
+        require_passable_for_approach,
     )
     if picked is None:
-        return None, RejectReason.NO_APPROACH_CELL, method
+        picked, method, stats = pick_cluster_neighbor_fallback(
+            cl,
+            data,
+            w,
+            h,
+            goal_reach_mask,
+            passable,
+            robot_xy,
+            ox,
+            oy,
+            res,
+            occ_th,
+            free_th,
+            unknown_val,
+            blacklist,
+            blacklist_radius,
+            min_robot_dist_m,
+            max_robot_dist_m,
+            neighbor_fallback_m,
+            min_occupied_clearance_m,
+            require_passable_for_approach,
+        )
+        if picked is not None:
+            method = "CLUSTER_APPROACH_FAILED: using nearest reachable free neighbor fallback"
+    if picked is None:
+        return None, RejectReason.NO_APPROACH_CELL, stats.summary_line(), stats
     gix, giy = picked
     wx = ox + (gix + 0.5) * res
     wy = oy + (giy + 0.5) * res
@@ -722,5 +1019,6 @@ def validate_and_build_goal(
             approach_method=method,
         ),
         None,
-        "",
+        method,
+        stats,
     )

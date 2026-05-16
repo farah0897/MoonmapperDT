@@ -11,6 +11,7 @@ install(
   PROGRAMS
   scripts/frontier_explorer
   scripts/nav2_health_check.sh
+  scripts/check_autonomous_exploration_stack.sh
   scripts/nav2_mission_health_check.sh
   scripts/nav2_localization_diagnose.sh
   scripts/nav2_mission_client_node

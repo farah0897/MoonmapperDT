@@ -7,7 +7,9 @@ import sys
 
 import rclpy
 import tf2_ros
+from nav2_msgs.action import NavigateToPose
 from nav_msgs.msg import OccupancyGrid
+from rclpy.action import ActionClient
 from rclpy.duration import Duration
 from rclpy.exceptions import ParameterAlreadyDeclaredException
 from rclpy.executors import ExternalShutdownException
@@ -37,8 +39,12 @@ class MapReadyWaitNode(Node):
         _d(self, "base_frame", "base_footprint")
         _d(self, "check_period_sec", 2.0)
         _d(self, "publish_ready", True)
+        _d(self, "navigate_action", "/navigate_to_pose")
+        _d(self, "check_nav2_action", True)
 
         self._map_topic = str(self.get_parameter("map_topic").value)
+        self._nav_action = str(self.get_parameter("navigate_action").value)
+        self._check_nav2_action = bool(self.get_parameter("check_nav2_action").value)
         self._base = str(self.get_parameter("base_frame").value)
         period = max(1.0, float(self.get_parameter("check_period_sec").value))
         self._pub_ready = bool(self.get_parameter("publish_ready").value)
@@ -54,6 +60,10 @@ class MapReadyWaitNode(Node):
             reliability=ReliabilityPolicy.RELIABLE,
         )
         self.create_subscription(OccupancyGrid, self._map_topic, self._on_map, qos)
+        self._nav: ActionClient | None = None
+        self._nav_ready = False
+        if self._check_nav2_action:
+            self._nav = ActionClient(self, NavigateToPose, self._nav_action)
         if self._pub_ready:
             self._ready_pub = self.create_publisher(Bool, "/nav2/map_ready", 10)
         self._timer = self.create_timer(period, self._check)
@@ -87,10 +97,18 @@ class MapReadyWaitNode(Node):
         if self._last_map is not None:
             w, h = int(self._last_map.info.width), int(self._last_map.info.height)
             map_s = f"{w}x{h} ready={self._ready}"
+        nav_s = "n/a"
+        if self._check_nav2_action and self._nav is not None:
+            if not self._nav_ready:
+                self._nav_ready = self._nav.server_is_ready() or self._nav.wait_for_server(
+                    timeout_sec=0.5
+                )
+            nav_s = "ready" if self._nav_ready else "waiting"
         self.get_logger().info(
             f"map={map_s} | odom->{self._base}: {self._lookup('odom', self._base)} | "
             f"map->odom: {self._lookup('map', 'odom')} | "
-            f"map->{self._base}: {self._lookup('map', self._base)}"
+            f"map->{self._base}: {self._lookup('map', self._base)} | "
+            f"nav2_action({self._nav_action})={nav_s}"
         )
 
 

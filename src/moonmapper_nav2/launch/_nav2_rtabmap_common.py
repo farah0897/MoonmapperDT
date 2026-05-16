@@ -65,6 +65,7 @@ def safety_node_rtabmap(
                 "front_angle_deg": ParameterValue(safety_angle, value_type=float),
                 "scan_timeout_sec": ParameterValue(safety_to, value_type=float),
                 "allow_reverse_when_blocked": True,
+                "reverse_speed_when_blocked": 0.12,
                 "publish_safety_debug": True,
                 "debug_log_period_sec": 2.0,
             },
