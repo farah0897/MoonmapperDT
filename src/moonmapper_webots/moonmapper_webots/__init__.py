@@ -1,1 +1,0 @@
-# MoonMapper Webots package

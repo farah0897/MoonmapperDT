@@ -1,9 +1,10 @@
-"""Depth-bilde (ROI + crop + min/percentil) -> sensor_msgs/LaserScan."""
+"""Depth-bilde (ROI + crop + percentile) -> sensor_msgs/LaserScan."""
 
 from __future__ import annotations
 
 import math
 import struct
+import time
 from typing import List, Optional
 
 import rclpy
@@ -21,18 +22,22 @@ class DepthToScanNode(Node):
         self.declare_parameter("camera_info_topic", "/depth_camera/camera_info")
         self.declare_parameter("scan_topic", "/scan")
         self.declare_parameter("scan_height", 10)
-        self.declare_parameter("scan_height_mode", "roi_min")
+        self.declare_parameter("scan_height_mode", "roi_percentile")
         self.declare_parameter("roi_top_ratio", 0.35)
         self.declare_parameter("roi_bottom_ratio", 0.65)
         self.declare_parameter("center_crop_ratio", 0.90)
         self.declare_parameter("min_valid_points_per_column", 2)
         self.declare_parameter("ground_filter_enabled", True)
         self.declare_parameter("ground_filter_bottom_roi_ratio", 0.12)
-        self.declare_parameter("roi_percentile", 0.20)
+        self.declare_parameter("roi_percentile", 0.10)
+        self.declare_parameter("front_percentile", 0.10)
+        self.declare_parameter("depth_min_valid_m", 0.20)
+        self.declare_parameter("depth_max_valid_m", 4.0)
         self.declare_parameter("range_min", 0.15)
         self.declare_parameter("range_max", 3.0)
         self.declare_parameter("scan_time", 0.1)
         self.declare_parameter("output_frame_id", "depth_camera_optical_frame")
+        self.declare_parameter("debug_log_period_sec", 1.0)
 
         self._depth_topic = str(self.get_parameter("depth_image_topic").value)
         self._info_topic = str(self.get_parameter("camera_info_topic").value)
@@ -48,10 +53,16 @@ class DepthToScanNode(Node):
         self._ground_en = bool(self.get_parameter("ground_filter_enabled").value)
         self._ground_skip = max(0.0, min(0.5, float(self.get_parameter("ground_filter_bottom_roi_ratio").value)))
         self._pct = max(0.0, min(1.0, float(self.get_parameter("roi_percentile").value)))
+        fp = float(self.get_parameter("front_percentile").value)
+        self._front_pct = max(0.0, min(1.0, fp if fp > 0.0 else self._pct)
+        self._z_min = float(self.get_parameter("depth_min_valid_m").value)
+        self._z_max = float(self.get_parameter("depth_max_valid_m").value)
         self._rmin = float(self.get_parameter("range_min").value)
         self._rmax = float(self.get_parameter("range_max").value)
         self._scan_time = float(self.get_parameter("scan_time").value)
         self._frame_override = str(self.get_parameter("output_frame_id").value).strip()
+        self._debug_period = float(self.get_parameter("debug_log_period_sec").value)
+        self._last_debug_t = 0.0
 
         self._ci: Optional[CameraInfo] = None
         self._bad_enc_logged = False
@@ -62,7 +73,8 @@ class DepthToScanNode(Node):
 
         self.get_logger().info(
             f"depth_to_scan_node: mode={self._mode} roi_v={self._roi_top:.2f}-{self._roi_bot:.2f} "
-            f"crop={self._crop:.2f} min_pts={self._min_pts}"
+            f"crop={self._crop:.2f} z_valid=[{self._z_min:.2f},{self._z_max:.2f}] "
+            f"pct={self._front_pct:.2f}"
         )
 
     def _on_info(self, msg: CameraInfo) -> None:
@@ -118,12 +130,13 @@ class DepthToScanNode(Node):
     def _column_range(self, zs: List[float]) -> Optional[float]:
         if len(zs) < self._min_pts:
             return None
-        zs = [z for z in zs if self._rmin <= z <= self._rmax]
+        zs = [z for z in zs if self._z_min <= z <= self._z_max]
         if len(zs) < self._min_pts:
             return None
         zs.sort()
-        if self._mode in ("roi_percentile", "percentile"):
-            idx = int(round(self._pct * float(len(zs) - 1)))
+        use_pct = self._mode in ("roi_percentile", "percentile", "roi_min")
+        if use_pct:
+            idx = int(round(self._front_pct * float(len(zs) - 1)))
             idx = max(0, min(len(zs) - 1, idx))
             return zs[idx]
         return zs[0]
@@ -160,6 +173,10 @@ class DepthToScanNode(Node):
         inc = (angle_max - angle_min) / float(ncols - 1) if ncols > 1 else 0.0
 
         ranges_out: List[float] = []
+        all_raw: List[float] = []
+        center_zs: List[float] = []
+        cu = (u_lo + u_hi) // 2
+
         for u in cols:
             zs: List[float] = []
             for v in range(v0, v1):
@@ -169,8 +186,12 @@ class DepthToScanNode(Node):
                 if z <= 0.0:
                     continue
                 zs.append(z)
+                if u == cu:
+                    all_raw.append(z)
 
             z_col = self._column_range(zs)
+            if u == cu:
+                center_zs = list(zs)
             if z_col is None:
                 ranges_out.append(float("inf"))
             else:
@@ -193,6 +214,24 @@ class DepthToScanNode(Node):
         out.range_max = self._rmax
         out.ranges = ranges_out
         self._pub.publish(out)
+
+        now = time.monotonic()
+        if self._debug_period > 0.0 and now - self._last_debug_t >= self._debug_period:
+            self._last_debug_t = now
+            finite = [r for r in ranges_out if not math.isnan(r) and not math.isinf(r)]
+            front = min(finite) if finite else float("nan")
+            raw_min = min(all_raw) if all_raw else float("nan")
+            p10 = float("nan")
+            med = float("nan")
+            if center_zs:
+                s = sorted(center_zs)
+                p10 = s[max(0, int(round(0.10 * (len(s) - 1))))]
+                med = s[len(s) // 2]
+            self.get_logger().info(
+                "DEPTH_TO_SCAN_DEBUG "
+                f"valid_points={len(center_zs)} raw_min={raw_min:.3f} p10={p10:.3f} "
+                f"median={med:.3f} published_front_range={front:.3f} frame={fid}"
+            )
 
 
 def main(args: Optional[list[str]] = None) -> None:

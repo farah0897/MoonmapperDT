@@ -26,7 +26,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.task import Future
 from rclpy.time import Time
-from std_msgs.msg import ColorRGBA, String
+from std_msgs.msg import ColorRGBA, Float32, String
 from visualization_msgs.msg import Marker, MarkerArray
 
 from moonmapper_nav2.frontier_map_debug import (
@@ -174,7 +174,7 @@ class FrontierExplorer(Node):
         d(self, "require_passable_for_approach", False)
         d(self, "frontier_neighbor_fallback_m", 1.0)
         d(self, "min_occupied_clearance_m", 0.15)
-        d(self, "stuck_blocked_cancel_sec", 2.5)
+        d(self, "stuck_blocked_cancel_sec", 8.0)
         d(self, "retreat_from_frontier_steps", 3)
         d(self, "blacklist_radius", 0.55)
         d(self, "blacklist_timeout_sec", 120.0)
@@ -195,6 +195,8 @@ class FrontierExplorer(Node):
         d(self, "initial_spin_max_duration_sec", 40.0)
         d(self, "initial_spin_angular_z", 0.28)
         d(self, "initial_spin_target_rad", 6.28)
+        d(self, "initial_spin_direct_cmd_vel", True)
+        d(self, "initial_spin_cmd_vel_topic", "/cmd_vel")
         d(self, "map_settle_after_spin_sec", 0.5)
         d(self, "explore_immediately_after_spin", True)
         d(self, "bfs_bridge_known_free_radius_m", 2.5)
@@ -227,7 +229,7 @@ class FrontierExplorer(Node):
         d(self, "enable_return_home_on_complete", True)
         d(self, "max_unknown_fraction_complete", 0.08)
         d(self, "min_frontier_clusters_to_continue", 1)
-        d(self, "enable_active_backout_on_failure", True)
+        d(self, "enable_active_backout_on_failure", False)
         d(self, "backout_duration_sec", 1.2)
         d(self, "backout_speed_mps", 0.10)
         d(self, "home_goal_tolerance_m", 0.35)
@@ -249,9 +251,10 @@ class FrontierExplorer(Node):
         d(self, "recovery_cmd_vel_linear", 0.05)
         d(self, "recovery_cmd_vel_angular", 0.25)
         d(self, "max_recovery_cycles", 5)
-        d(self, "stuck_timeout_sec", 8.0)
-        d(self, "min_progress_m", 0.10)
-        d(self, "min_yaw_progress_rad", 0.15)
+        d(self, "enable_nav_stuck_detection", False)
+        d(self, "stuck_timeout_sec", 45.0)
+        d(self, "min_progress_m", 0.03)
+        d(self, "min_yaw_progress_rad", 0.08)
         d(self, "max_same_goal_failures", 2)
         d(self, "blacklist_radius_m", 0.6)
         d(self, "blacklist_duration_sec", 60.0)
@@ -266,6 +269,16 @@ class FrontierExplorer(Node):
         d(self, "return_home_yaw_tolerance_rad", 0.6)
         d(self, "return_home_on_completion", True)
         d(self, "return_home_retry_tolerance_m", 0.5)
+        d(self, "enable_too_close_recovery", True)
+        d(self, "too_close_distance_m", 0.20)
+        d(self, "too_close_sustain_sec", 5.0)
+        d(self, "too_close_min_progress_m", 0.03)
+        d(self, "recovery_backup_distance_m", 0.30)
+        d(self, "backup_timeout_sec", 5.0)
+        d(self, "no_turn_timeout_sec", 10.0)
+        d(self, "enable_no_turn_recovery", False)
+        d(self, "recovery_blacklist_radius_m", 0.7)
+        d(self, "post_backup_turn_angle_deg", 30.0)
 
         self._logged_map_tf_diag = False
         self._no_frontier_soft_retries = 0
@@ -325,13 +338,27 @@ class FrontierExplorer(Node):
         self._last_pick_log_t = 0.0
         self._home_saved_published = False
         self._return_home_retry = False
+        self._last_front_min: Optional[float] = None
+        self._last_obstacle_state: str = ""
+        self._too_close_since: Optional[float] = None
+        self._no_turn_since: Optional[float] = None
+        self._too_close_start_xy: Optional[Tuple[float, float]] = None
+        self._last_cmd_vel_raw_x: float = 0.0
 
         self._tf = tf2_ros.Buffer(cache_time=Duration(seconds=30.0))
         tf2_ros.TransformListener(self._tf, self, spin_thread=False)
 
         nav_topic = str(self.get_parameter("navigate_action").value)
         self._nav = ActionClient(self, NavigateToPose, nav_topic, callback_group=self._cb)
-        self._cmd = self.create_publisher(Twist, str(self.get_parameter("cmd_vel_topic").value), 10)
+        cmd_topic = str(self.get_parameter("cmd_vel_topic").value)
+        self._cmd = self.create_publisher(Twist, cmd_topic, 10)
+        self._cmd_spin: Optional[object] = None
+        if bool(self.get_parameter("initial_spin_direct_cmd_vel").value):
+            spin_topic = str(self.get_parameter("initial_spin_cmd_vel_topic").value)
+            self._cmd_spin = self.create_publisher(Twist, spin_topic, 10)
+            self.get_logger().info(
+                f"initial spin publishes to {spin_topic} (bypass collision_monitor on {cmd_topic})"
+            )
         self._pub_stat = self.create_publisher(String, "/frontier_explorer/status", FRONTIER_TOPIC_QOS)
         self._pub_goal = self.create_publisher(PoseStamped, "/frontier_explorer/current_goal", FRONTIER_TOPIC_QOS)
         self._pub_start = self.create_publisher(
@@ -363,6 +390,20 @@ class FrontierExplorer(Node):
             String,
             "/obstacle/current_state",
             self._on_obstacle_state,
+            10,
+            callback_group=self._cb,
+        )
+        self.create_subscription(
+            Float32,
+            "/obstacle/front_min",
+            self._on_front_min,
+            10,
+            callback_group=self._cb,
+        )
+        self.create_subscription(
+            Twist,
+            "/cmd_vel_raw",
+            self._on_cmd_vel_raw,
             10,
             callback_group=self._cb,
         )
@@ -477,15 +518,55 @@ class FrontierExplorer(Node):
     def _cmd_ok(self) -> bool:
         if not bool(self.get_parameter("require_cmd_vel_subscriber").value):
             return True
-        t = str(self.get_parameter("cmd_vel_topic").value)
+        if self._st == _St.SPIN and self._cmd_spin is not None:
+            t = str(self.get_parameter("initial_spin_cmd_vel_topic").value)
+        else:
+            t = str(self.get_parameter("cmd_vel_topic").value)
         return self.count_subscribers(t) >= 1
 
+    def _publish_cmd(self, tw: Twist, *, spin: bool = False) -> None:
+        if spin and self._cmd_spin is not None:
+            self._cmd_spin.publish(tw)
+        else:
+            self._cmd.publish(tw)
+
     def _on_obstacle_state(self, msg: String) -> None:
-        if msg.data in ("blocked_front", "stop_turn"):
+        self._last_obstacle_state = msg.data
+        blocked = msg.data in (
+            "blocked_front",
+            "stop_turn",
+            "stop",
+            "backup_required",
+            "emergency_stop",
+        )
+        if blocked:
             if self._obstacle_blocked_since is None:
                 self._obstacle_blocked_since = time.monotonic()
         else:
             self._obstacle_blocked_since = None
+
+    def _on_cmd_vel_raw(self, msg: Twist) -> None:
+        self._last_cmd_vel_raw_x = float(msg.linear.x)
+
+    def _on_front_min(self, msg: Float32) -> None:
+        v = float(msg.data)
+        if math.isnan(v) or math.isinf(v):
+            self._last_front_min = None
+        else:
+            self._last_front_min = v
+
+    def _start_too_close_recovery(self, reason: str) -> None:
+        self.get_logger().warn(f"TOO_CLOSE_RECOVERY_TRIGGERED reason={reason}")
+        if self._last_goal is not None:
+            wx, wy = self._last_goal
+            br = float(self.get_parameter("recovery_blacklist_radius_m").value)
+            self._blacklist_failed.append((wx, wy, time.monotonic()))
+            self.get_logger().info(
+                f"BLACKLIST_GOAL world=({wx:.2f},{wy:.2f}) radius={br:.2f}"
+            )
+        self._too_close_since = None
+        self._no_turn_since = None
+        self._start_recovery(reason, RecoveryPhase.BACKUP)
 
     def _mark_explored_current(self) -> None:
         if self._map is None:
@@ -696,6 +777,77 @@ class FrontierExplorer(Node):
         self._nav_after_send = after_send
         self._send_future = self._nav.send_goal_async(goal)
         self._st = _St.SEND
+
+    def _check_too_close_recovery(self, nowm: float) -> bool:
+        if not bool(self.get_parameter("enable_too_close_recovery").value):
+            return False
+        if self._st != _St.NAV:
+            return False
+        if nowm - self._nav_started_at < float(self.get_parameter("min_nav_commit_sec").value):
+            return False
+        if self._last_front_min is None:
+            return False
+        emergency = float(self.get_parameter("too_close_distance_m").value)
+        fm = self._last_front_min
+        if fm > emergency:
+            self._too_close_since = None
+            self._too_close_start_xy = None
+            return False
+        pose = self._pose_map()
+        if self._too_close_since is None:
+            self._too_close_since = nowm
+            if pose is not None:
+                self._too_close_start_xy = (pose[0], pose[1])
+            return False
+        sustain = float(self.get_parameter("too_close_sustain_sec").value)
+        if nowm - self._too_close_since < sustain:
+            return False
+        moved = 0.0
+        if pose is not None and self._too_close_start_xy is not None:
+            moved = math.hypot(pose[0] - self._too_close_start_xy[0], pose[1] - self._too_close_start_xy[1])
+        if moved >= float(self.get_parameter("too_close_min_progress_m").value):
+            self._too_close_since = None
+            self._too_close_start_xy = None
+            return False
+        if bool(self.get_parameter("enable_no_turn_recovery").value):
+            if pose is not None and self._nav_progress_yaw is not None:
+                yd = abs(_norm(pose[2] - self._nav_progress_yaw))
+                if yd < float(self.get_parameter("min_yaw_progress_rad").value):
+                    if self._no_turn_since is None:
+                        self._no_turn_since = nowm
+                    elif nowm - self._no_turn_since >= float(
+                        self.get_parameter("no_turn_timeout_sec").value
+                    ):
+                        self.get_logger().info(
+                            f"NO_TURN_DETECTED yaw_delta={yd:.3f} front_min={fm:.2f}"
+                        )
+                        if self._goal_handle is not None:
+                            try:
+                                self._goal_handle.cancel_goal_async()
+                            except Exception:
+                                pass
+                        self._goal_handle = None
+                        self._result_future = None
+                        self._start_too_close_recovery("no_turn_space")
+                        return True
+                else:
+                    self._no_turn_since = None
+        self.get_logger().warn(
+            f"TOO_CLOSE_RECOVERY_TRIGGERED front_min={fm:.2f}m moved={moved:.2f}m "
+            f"sustain={sustain:.0f}s"
+        )
+        if self._goal_handle is not None:
+            self.get_logger().info("CANCEL_NAV2_GOAL reason=too_close_emergency")
+            try:
+                self._goal_handle.cancel_goal_async()
+            except Exception:
+                pass
+        self._goal_handle = None
+        self._result_future = None
+        self._too_close_since = None
+        self._too_close_start_xy = None
+        self._start_too_close_recovery("too_close_emergency")
+        return True
 
     def _cancel_nav_stuck(self, reason: str) -> None:
         self.get_logger().warn(f"[frontier_explorer] {reason} — cancel goal, blacklist, recover")
@@ -1034,7 +1186,7 @@ class FrontierExplorer(Node):
             self.get_parameter("min_clearance_after_failure_m").value
         )
         self._zero()
-        if self._maybe_start_recovery_instead_of_pause(reason):
+        if reason in ("too_close_emergency", "no_turn_space") and self._maybe_start_recovery_instead_of_pause(reason):
             return
         if bool(self.get_parameter("enable_active_backout_on_failure").value):
             self._start_backout()
@@ -1345,7 +1497,10 @@ class FrontierExplorer(Node):
 
     def _zero(self) -> None:
         try:
-            self._cmd.publish(Twist())
+            z = Twist()
+            self._cmd.publish(z)
+            if self._cmd_spin is not None:
+                self._cmd_spin.publish(z)
         except Exception:
             pass
 
@@ -1491,7 +1646,7 @@ class FrontierExplorer(Node):
             az = float(self.get_parameter("initial_spin_angular_z").value)
             tw = Twist()
             tw.angular.z = az
-            self._cmd.publish(tw)
+            self._publish_cmd(tw, spin=True)
             if (self._spin_accum >= tgt and (nowt - self._spin_t0) >= mn) or (nowt - self._spin_t0) >= mx:
                 self._zero()
                 self._did_initial_spin = True
@@ -1721,9 +1876,15 @@ class FrontierExplorer(Node):
 
         if self._st == _St.NAV:
             nowm = time.monotonic()
+            if self._check_too_close_recovery(nowm):
+                return
             min_commit = float(self.get_parameter("min_nav_commit_sec").value)
             pose = self._pose_map()
-            if pose is not None and self._nav_progress_xy is not None:
+            if (
+                bool(self.get_parameter("enable_nav_stuck_detection").value)
+                and pose is not None
+                and self._nav_progress_xy is not None
+            ):
                 prog = math.hypot(pose[0] - self._nav_progress_xy[0], pose[1] - self._nav_progress_xy[1])
                 yprog = 0.0
                 if self._nav_progress_yaw is not None:
@@ -1734,9 +1895,13 @@ class FrontierExplorer(Node):
                     self._nav_progress_xy = (pose[0], pose[1])
                     self._nav_progress_yaw = pose[2]
                     self._nav_progress_t0 = nowm
-                elif nowm - self._nav_progress_t0 >= float(
-                    self.get_parameter("stuck_timeout_sec").value
-                ) and nowm - self._nav_started_at >= min_commit:
+                elif (
+                    nowm - self._nav_progress_t0 >= float(
+                        self.get_parameter("stuck_timeout_sec").value
+                    )
+                    and nowm - self._nav_started_at >= min_commit
+                    and abs(self._last_cmd_vel_raw_x) > 0.02
+                ):
                     lg = self.get_logger()
                     gxy = self._last_goal or (0.0, 0.0)
                     lg.warn(
@@ -1746,12 +1911,18 @@ class FrontierExplorer(Node):
                     lg.info("CANCEL_NAV2_GOAL")
                     self._cancel_nav_stuck("no_progress_during_navigation")
                     return
+            if pose is not None and self._nav_progress_xy is None:
+                self._nav_progress_xy = (pose[0], pose[1])
+                self._nav_progress_yaw = pose[2]
+                self._nav_progress_t0 = nowm
             if nowm - self._nav_started_at < min_commit:
                 pass
             else:
                 stuck_sec = float(self.get_parameter("stuck_blocked_cancel_sec").value)
                 if (
                     self._obstacle_blocked_since is not None
+                    and self._last_obstacle_state
+                    in ("stop", "backup_required", "emergency_stop", "blocked_front")
                     and nowm - self._obstacle_blocked_since >= stuck_sec
                 ):
                     self._cancel_nav_stuck("front blocked too long during navigation")

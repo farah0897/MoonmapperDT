@@ -33,9 +33,9 @@ frontier_explorer:
     require_passable_for_approach: false
     frontier_neighbor_fallback_m: 1.0
     min_occupied_clearance_m: 0.15
-    min_obstacle_clearance_m: 0.38
-    min_obstacle_clearance_floor_m: 0.32
-    preferred_obstacle_clearance_m: 0.65
+    min_obstacle_clearance_m: 0.28
+    min_obstacle_clearance_floor_m: 0.24
+    preferred_obstacle_clearance_m: 0.50
     min_unknown_clearance_m: 0.10
     preferred_unknown_clearance_m: 0.25
     frontier_goal_score_obstacle_weight: 3.0
@@ -75,6 +75,8 @@ frontier_explorer:
     initial_spin_max_duration_sec: 40.0
     initial_spin_angular_z: 0.28
     initial_spin_target_rad: 6.28
+    initial_spin_direct_cmd_vel: true
+    initial_spin_cmd_vel_topic: /cmd_vel
     map_settle_after_spin_sec: 0.5
     explore_immediately_after_spin: true
     bfs_bridge_known_free_radius_m: 2.5
@@ -93,9 +95,9 @@ frontier_explorer:
     fallback_radius_min_m: 0.15
     fallback_radius_max_m: 0.8
     explored_mark_radius_m: 0.45
-    min_passage_clearance_m: 0.35
-    min_passage_clearance_floor_m: 0.28
-    narrow_passage_penalty_weight: 4.0
+    min_passage_clearance_m: 0.46
+    min_passage_clearance_floor_m: 0.40
+    narrow_passage_penalty_weight: 2.0
     explored_revisit_penalty: 2.5
     enable_return_home_on_complete: true
     return_home_enabled: true
@@ -103,7 +105,7 @@ frontier_explorer:
     max_unknown_fraction_complete: 0.08
     reachable_unknown_threshold_ratio: 0.08
     min_frontier_clusters_to_continue: 1
-    enable_active_backout_on_failure: true
+    enable_active_backout_on_failure: false
     backout_duration_sec: 1.2
     backout_speed_mps: 0.10
     home_goal_tolerance_m: 0.35
@@ -130,9 +132,11 @@ frontier_explorer:
     recovery_cmd_vel_angular: 0.25
     max_recovery_cycles: 5
     # Stuck during Nav2
-    stuck_timeout_sec: 8.0
-    min_progress_m: 0.10
-    min_yaw_progress_rad: 0.15
+    enable_nav_stuck_detection: false
+    stuck_blocked_cancel_sec: 12.0
+    stuck_timeout_sec: 45.0
+    min_progress_m: 0.03
+    min_yaw_progress_rad: 0.08
     max_same_goal_failures: 2
     # Completion + return home (not before min exploration time)
     completion_check_enabled: true
@@ -140,3 +144,13 @@ frontier_explorer:
     min_exploration_time_sec: 30.0
     coverage_stable_time_sec: 10.0
     coverage_delta_threshold_cells: 30
+    enable_too_close_recovery: false
+    too_close_distance_m: 0.20
+    too_close_sustain_sec: 5.0
+    too_close_min_progress_m: 0.03
+    recovery_backup_distance_m: 0.30
+    backup_timeout_sec: 5.0
+    enable_no_turn_recovery: false
+    no_turn_timeout_sec: 10.0
+    recovery_blacklist_radius_m: 0.6
+    max_search_attempts_before_recovery: 5

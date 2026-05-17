@@ -13,6 +13,7 @@ from geometry_msgs.msg import Twist
 class RecoveryPhase(Enum):
     SPIN = auto()
     FORWARD = auto()
+    BACKUP = auto()
     BACKUP_TURN = auto()
 
 
@@ -119,6 +120,21 @@ class RecoveryRunner:
                 self._t0 = now
                 if pose_map is not None:
                     self._start_xy = (pose_map[0], pose_map[1])
+            return False
+
+        if self._phase == RecoveryPhase.BACKUP:
+            if pose_map is not None and self._start_xy is None:
+                self._start_xy = (pose_map[0], pose_map[1])
+            tw = Twist()
+            tw.linear.x = -abs(lin)
+            self._pub(tw)
+            dist_tgt = float(self._get("recovery_backup_distance_m").value)
+            moved = 0.0
+            if pose_map is not None and self._start_xy is not None:
+                moved = math.hypot(pose_map[0] - self._start_xy[0], pose_map[1] - self._start_xy[1])
+            if moved >= dist_tgt or now - self._t0 > float(self._get("backup_timeout_sec").value):
+                self.stop()
+                return True
             return False
 
         if self._phase == RecoveryPhase.FORWARD:
