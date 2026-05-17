@@ -10,9 +10,9 @@
 
 Ved siden av den fysiske MoonMapper-roveren er det utviklet en **digital tvilling** i ROS 2-workspacet `moonmapper_ws`. Tvillingen skal etterligne den fysiske roboten tilstrekkelig nært til at samme autonomi-stack (SLAM, Nav2, frontier-utforskning, sikkerhetslag) kan kjøres i simulasjon før og parallelt med feltforsøk.
 
-**Hovedprinsipp:** Én felles **robotbeskrivelse** (URDF/Xacro) definerer geometri, masse, ledd og sensor-rammer. Gazebo Sim 8 (Harmonic) utvider denne med fysikk, sensor-plugins og `ros2_control`. Topic-navn og TF-rammer speiles der det trengs mot den fysiske roveren (f.eks. RealSense D435 via `camera_aliases`).
+**Hovedprinsipp:** Én felles **robotbeskrivelse** (URDF/Xacro) definerer geometri, masse, ledd og sensor-rammer. Gazebo Sim 8 (Harmonic) utvider denne med fysikk, sensor-plugins og `ros2_control`. I sim brukes `/depth_camera/*` direkte fra `ros_gz_bridge` (alias til RealSense ligger i arkiv: `arkiverte_koder/gamle_nodes/moonmapper_bringup/camera_aliases.py`).
 
-**Simulatormotor:** Primær digital tvilling er **Gazebo Sim 8** med DART-fysikk. Et alternativ finnes i pakken `moonmapper_webots` (`sim.launch.py`), men hovedstacken for autonom utforskning bruker Gazebo.
+**Simulatormotor:** Primær digital tvilling er **Gazebo Sim 8** med DART-fysikk. Historisk Webots-stack er arkivert under `arkiverte_koder/gamle_webots_filer/`; hovedstacken for autonom utforskning bruker Gazebo.
 
 Diagram i vedlegg (systemarkitektur, `\ref{appendix:system_arkitektur}`) viser kommunikasjon mellom systemets komponenter: kommandoer (`cmd_vel`-kjeden), sensordata (broer Gazebo → ROS), odometri/TF, logging og Nav2/RTAB-Map. Nedenfor er samme informasjon utdypet per implementasjonslag.
 
@@ -41,10 +41,13 @@ Diagram i vedlegg (systemarkitektur, `\ref{appendix:system_arkitektur}`) viser k
 | Lag | Pakke / fil | Rolle |
 |-----|-------------|--------|
 | Robotmodell | `moonmapper_description` | URDF/Xacro, mesh, Gazebo-utvidelse, verdener |
-| Sim-bringup | `moonmapper_bringup` | `gazebo_rover`, `cmd_vel_odom_relay`, `camera_aliases` |
-| Gazebo-plugins | `moonmapper_gz_sensors`, `gz_plugins` | Rocker-bogie-differensial, syntetisk triad-spektroskopi |
+| Sim-bringup | `moonmapper_bringup` | `sim_rover_clean`, `gazebo_rover`, `cmd_vel_odom_relay` |
+| Gazebo-plugin | `moonmapper_description/gz_plugins` | Rocker-bogie-differensial (`RockerBogieDifferential`) |
 | Autonomi | `moonmapper_nav2`, `moonmapper_autonomy` | Nav2, depth→scan, sikkerhet, frontier explorer |
 | Fysisk referanse | `rover/code/dynamixel_driver.py` | `/cmd_vel`, `/odom`, Dynamixel 6WD |
+| ML (fysisk, offline) | `ml/`, `arduino/`, `scripts/predict.py` | Triad burst + Random Forest — **ikke** i Gazebo-stack |
+
+**Arkivert** (ikke i aktiv `colcon build`): `moonmapper_gz_sensors`, `moonmapper_msgs`, `moonmapper_interfaces`, `moonmapper_perception`, `moonmapper_ml`, `moonmapper_localization`, m.fl. under `arkiverte_koder/gamle_ros_pakker/`.
 
 **Bygg og kjøring (autonom utforskning i sim):**
 
@@ -73,7 +76,8 @@ ros2 launch moonmapper_bringup sim_rover_clean.launch.py use_sim_time:=true
 |--------|----------------|
 | Dynamixel 6WD, `/cmd_vel` | `diff_drive_controller` via `cmd_vel_odom_relay` |
 | Wheel odometry `/odom` | `/diff_drive_controller/odom` → speilet `/odom` |
-| RealSense D435 topics | `/depth_camera/*` → `camera_aliases` → `/camera/camera/…` |
+| Sim depth/RGB (aktiv) | `/depth_camera/*` direkte fra `ros_gz_bridge` |
+| RealSense-alias (arkiv) | `camera_aliases` → `/camera/camera/…` (fysisk rover) |
 | `odom → base_link → camera_*` TF | `odom → base_footprint → base_link → …` (REP-105) |
 
 Fysiske hjulparametre i driver: `WHEEL_RADIUS_METERS = 0.05`, `WHEEL_SEPARATION_METERS = 0.29`. I sim brukes målte verdier fra URDF: radius **0,045 m**, sporvidde **0,217 m** (`diff_drive_controller.yaml`) — bevisst kalibrert mot modellen, ikke kopiert blindt fra driver.
@@ -113,16 +117,16 @@ Masse og treghet på `base_link` er målt/estimert (ca. **0,907 kg**) med ekspli
 ### Filhierarki
 
 ```
-moonmapper.urdf.xacro          # Entry point (inkluderer rover)
+moonmapper_rover_gazebo.urdf.xacro  # Aktiv entry (sim + RViz via launch)
     └── moonmapper_rover.urdf.xacro   # Full kinematik + sensor-links
-            └── (materials, macros)
 
-moonmapper_rover_gazebo.urdf.xacro  # Inkluderer rover + Gazebo-tags
+# Arkivert: moonmapper.urdf.xacro, materials.xacro, moonmapper_macros.xacro
+# → arkiverte_koder/gamle_urdf/moonmapper_description/
     ├── wheel_gazebo (friksjon)
     ├── gz_ros2_control plugin
     ├── RockerBogieDifferential plugin
-    ├── sensor <sensor> på base_link
-    └── TriadSpectroscopy (valgfritt)
+    └── sensor <sensor> på base_link (IMU, stereo, depth, mikroskop)
+# Syntetisk Triad-plugin: arkivert (moonmapper_gz_sensors); enable_triad_spectroscopy default false
 ```
 
 **Launch** prosesserer typisk `moonmapper_rover_gazebo.urdf.xacro` med `use_gazebo:=true` og fysikk-argumenter (`wheel_mu1`, `physics_profile`, osv.).
@@ -158,7 +162,7 @@ Faste ledd fra `base_link`:
 ### SDF-verdener
 
 - **Verdener:** `worlds/*.sdf` — frittstående Gazebo-verdener (ikke generert fra xacro).
-- **Innebygd modell:** `models/replan_test_block/model.sdf` — testhindring.
+- **Testhindring** `replan_test_block` er arkivert (`arkiverte_koder/gamle_models/moonmapper_description/`); aktiv utforskning bruker verdens-SDF.
 - Roveren spawnes fra URDF via `ros_gz_sim create`, ikke som egen SDF-modell.
 
 ### Gazebo-spesifikke utvidelser
@@ -223,13 +227,13 @@ For bachelor/demo av autonom utforskning er **`earth_explore`** valgt: avgrenset
 | Stereo L/R | `camera` | 15 Hz | 70° FOV, `gz_frame_id` = optical frame |
 | Depth | `rgbd_camera` | 15 Hz | RGB + depth + point cloud; klipp 0,05–10 m |
 | Mikroskop | `camera` | 10 Hz | Nedover pekende |
-| Triad 1/2 | custom plugin | 20 Hz | Raycast-spektrum mot material_map |
+| Triad 1/2 (URDF) | — | — | Kun geometri/TF i aktiv sim; spektrum: fysisk Arduino + `ml/` |
 
 `/scan` for Nav2 kommer **ikke** fra Gazebo-lidar, men fra `moonmapper_autonomy/depth_to_scan_node` som projiserer dybdekamera til `sensor_msgs/LaserScan`.
 
 ### Alias mot fysisk RealSense
 
-`moonmapper_bringup/camera_aliases.py` republiserer:
+**Arkivert:** `arkiverte_koder/gamle_nodes/moonmapper_bringup/camera_aliases.py` republiserte:
 
 ```
 /depth_camera/image        → /camera/camera/color/image_raw
@@ -242,7 +246,7 @@ med `camera_color_optical_frame` / `camera_depth_optical_frame`. Statisk TF for 
 
 ### Validering
 
-Se `src/moonmapper_description/Level1_Sensors.md` for sjekkliste (`ros2 topic hz`, `view_frames`).
+Se `arkiverte_koder/gamle_dokumentasjon_utkast/moonmapper_description/Level1_Sensors.md` for sensorsjekkliste (`ros2 topic hz`, `view_frames`).
 
 ---
 
@@ -266,7 +270,7 @@ autonomous_exploration_full.launch.py   [moonmapper_nav2]
 3. `ros_gz_sim create` (spawn)
 4. `ros_gz_bridge` (sensorer + clock)
 5. Controller-spawners (`joint_state_broadcaster`, `diff_drive_controller`)
-6. `cmd_vel_odom_relay`, ev. `camera_aliases`, EKF (valgfritt)
+6. `cmd_vel_odom_relay` (`use_ekf` default false; EKF-yaml arkivert)
 
 ### TF-trær (sim, typisk autonom kjøring)
 
@@ -283,7 +287,7 @@ Statiske alias (sim): `camera_link`, `camera_color_optical_frame`, `camera_depth
 
 ### `use_sim_time`
 
-Alle noder i sim skal bruke `use_sim_time:=true` og motta `/clock` fra broen — ellers feiler tidsstempler (f.eks. collision monitor, `camera_aliases` med `refresh_header_stamp`).
+Alle noder i sim skal bruke `use_sim_time:=true` og motta `/clock` fra broen — ellers feiler tidsstempler i costmap/safety.
 
 ### Tidsforsinkelinger (full autonomi)
 
@@ -369,8 +373,9 @@ Fra `config/diff_drive_controller.yaml`:
 | `Kodedokumentasjone.md` | Pakkeoversikt, rocker-plugin |
 | `rover/simulation/Simulation Guide.md` | Kontrakt sim ↔ fysisk |
 | `src/moonmapper_description/launch/gazebo_rover.launch.py` | Docstring, motorvei |
-| `src/moonmapper_description/Level1_Sensors.md` | Sensor-sjekkliste |
-| `src/moonmapper_autonomy/README.md` | depth→scan + safety-kjede |
+| `arkiverte_koder/.../Level1_Sensors.md` | Sensor-sjekkliste (arkivert) |
+| `maskinlaering.md` | Offline Triad + RF (fysisk bench) |
+| `arkiverte_koder/gamle_ros_pakker/` | Arkivert sim-ML og ROS ML-pakker |
 
 ---
 

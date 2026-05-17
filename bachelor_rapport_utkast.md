@@ -70,8 +70,8 @@ Delmål (se også kap. 2.2):
 | Digital tvilling (Gazebo + ROS 2) | Full mekanisk produksjon av chassis |
 | Simulering av bevegelse og sensorer | Komplett elektronikk-/PCB-design |
 | RTAB-Map, Nav2, frontier-utforsking | Ferdig fysisk prototype klar for måne |
-| Spektral/metall-ML (Triad) der implementert | Lavgravitasjons-fysikk i Gazebo (jord-gravitasjon brukes) |
-| Dokumentasjon og kravsporing | Multi-robot / sverm |
+| Spektral/metall-ML (Triad, **offline** på fysisk hardware) | Syntetisk Triad i Gazebo; ROS ML-pakker (arkivert) |
+| Dokumentasjon og kravsporing | Lavgravitasjon i Gazebo; multi-robot / sverm |
 
 Den fysiske roveren (Dynamixel-driver, RealSense) beskrives som **referanse og fremtidig integrasjon**, ikke som hovedleveranse i denne oppgaven.
 
@@ -92,7 +92,7 @@ Kap. 2 kobler oppgaven til krav. Kap. 3–4 gir teori og metode. Kap. 5 beskrive
 | # | Delmål | Leveranse i prosjektet |
 |---|--------|------------------------|
 | 1 | Simulert rovermodell i Gazebo | `moonmapper_rover.urdf.xacro`, `moonmapper_rover_gazebo.urdf.xacro`, `gazebo_rover.launch.py` |
-| 2 | ROS 2-kommunikasjon robot ↔ sensorer ↔ navigasjon | `ros_gz_bridge`, `camera_aliases`, `cmd_vel_odom_relay` |
+| 2 | ROS 2-kommunikasjon robot ↔ sensorer ↔ navigasjon | `ros_gz_bridge`, `/depth_camera/*`, `cmd_vel_odom_relay`, `depth_to_scan_node` |
 | 3 | RTAB-Map for kartlegging | `rtabmap_sim.launch.py`, database `~/.ros/moonmapper_rtabmap.db` |
 | 4 | Nav2 for autonom navigasjon | `nav2_rtabmap_navigation.launch.py`, `nav2_params_rtabmap_sim.yaml` |
 | 5 | Frontier-basert utforsking | `frontier_explorer` + `frontier_explorer.yaml` |
@@ -114,7 +114,7 @@ Kravdokumentet angir blant annet at roboten skal kunne **kartlegge måneoverflat
 | Område | Status i oppgaven |
 |--------|-------------------|
 | Mekanikk (rocker-bogie, CAD) | Modellert i URDF/mesh; fysisk montering utenfor scope |
-| Elektronikk (Dynamixel, Triad, mux) | Referansekode (`dynamixel_driver.py`, Arduino-logger); sim bruker Gazebo-sensorer |
+| Elektronikk (Dynamixel, Triad, mux) | Fysisk: Arduino-logger + `ml/`; sim: Gazebo-kamera/IMU (ikke syntetisk Triad) |
 | Fysisk prototype | Fremtidig integrasjon; sim valgt fordi den tillater iterasjon på Nav2/SLAM nå |
 
 ## Kravsporing (tabell)
@@ -125,7 +125,7 @@ Kravdokumentet angir blant annet at roboten skal kunne **kartlegge måneoverflat
 | Manøvrere på overflate | Nav2 + diff_drive i Gazebo | `NavigateToPose`, `/cmd_vel`, kjøretester i `earth_arena_explore` |
 | Komplett 3D-modell robot | URDF + STL-mesh + SDF-verden | RViz RobotModel, inspeksjon av `meshes/visual/`, dokumentasjon |
 | Dokumentasjon / arkitektur | Hele rapporten + vedlegg | Kap. 5, `\ref{appendix:system_arkitektur}`, Git |
-| Spektral/metall (hvis i krav) | Triad (fysisk + syntetisk i GZ) + ML | Kap. 10, test 11.10, confusion matrix |
+| Spektral/metall (hvis i krav) | Triad på **fysisk** bench + offline ML (`ml/`, `predict.py`) | Kap. 10, test 11.10, confusion matrix |
 
 *Sett inn eksakte SRQ/TRQ-nummer fra kravdokumentet i LaTeX-tabellen.*
 
@@ -141,7 +141,7 @@ I dette prosjektet er digital tvilling en **virtuell representasjon** av:
 
 - robotgeometri og ledd (URDF),
 - fysikk og kontakt (Gazebo),
-- sensorer (kamera, IMU, syntetisk spektrum),
+- sensorer (kamera, IMU; Triad kun geometri i URDF — spektrum på fysisk robot),
 - og programvareflyt (ROS 2-noder, topics, TF).
 
 Tvillingen brukes til å teste oppførsel **før** fysisk robot er ferdig, og til å reprodusere feil (f.eks. TF-timing, frontier-målvalg) kontrollert.
@@ -282,6 +282,17 @@ flowchart TB
 
 **Figur 1 (forslag):** Lagmodell — Gazebo → sensorer/robot → ROS topics/TF → RTAB-Map → Nav2 → frontier_explorer → cmd_vel.
 
+### Aktive ROS 2-pakker (`src/`, mai 2026)
+
+| Pakke | Rolle |
+|-------|--------|
+| `moonmapper_description` | URDF, Gazebo-verdener, `gazebo_rover`, rocker-bogie-plugin |
+| `moonmapper_bringup` | `sim_rover_clean`, `cmd_vel_odom_relay` |
+| `moonmapper_autonomy` | `depth_to_scan_node`, `safety_obstacle_node` |
+| `moonmapper_nav2` | RTAB-Map, Nav2, `frontier_explorer` |
+
+**Arkivert** under `arkiverte_koder/` (bygges ikke i aktiv `colcon`): bl.a. `moonmapper_gz_sensors`, `moonmapper_msgs`, `moonmapper_interfaces`, `moonmapper_perception`, `moonmapper_ml`, `moonmapper_localization`, `moonmapper_slam`, `moonmapper_mapping`, Webots. **ML uten ROS:** `ml/`, `scripts/predict.py`, `arduino/`.
+
 ## 5.2 ROS 2 node- og topic-arkitektur
 
 **Figur 2 (forslag):** Topic/dataflyt
@@ -309,7 +320,7 @@ cmd_vel_odom_relay → /diff_drive_controller/cmd_vel
 
 ## 5.4 Sensorlag
 
-`ros_gz_bridge.yaml`, `camera_aliases`, `depth_to_scan_node`. Se `digital_tvilling.md` § Sensorimplementasjon.
+`ros_gz_bridge.yaml`, `depth_to_scan_node` (`/depth_camera/*` → `/scan`). RealSense-alias (`camera_aliases`) er arkivert. Se `digital_tvilling.md` § Sensorimplementasjon.
 
 ## 5.5 Kartleggingslag
 
@@ -507,10 +518,12 @@ Kort sammendrag:
 | 10.2 Triad | 2× AS7265X, 36 kanaler, Arduino + mux |
 | 10.3–10.4 Data + preprocess | Burst CSV, LED on/off, feature-statistikk |
 | 10.5–10.7 ML | ~189 features → Random Forest (300 trær) → evaluering |
-| 10.8 ROS | `ml_inference_node` (placeholder), meldinger definert |
+| 10.8 Inferens | Offline: `scripts/predict.py` + `ml/models/*.joblib` |
+| 10.9 ROS (arkivert) | `moonmapper_interfaces`, `moonmapper_perception`, `moonmapper_ml` — planlagt sanntid, ikke i aktiv stack |
 
 **Datasett (repo):** 52 stål-prøver i `metadata.csv`; pipeline klar for fire klasser (`labels.yaml`). Fyll inn egne flerklasse-resultater i ML-rapportutkastet.
 
+**Innsamling (fysisk):** `python ml/data_collection/collect_triad_burst.py --port /dev/ttyACM0 --sample-id …`  
 **Live-test:** `python scripts/predict.py --raw ml/datasets/live/...`
 
 ---
@@ -576,9 +589,11 @@ ros2 action send_goal /navigate_to_pose nav2_msgs/action/NavigateToPose "..."
 
 Observer `safety_obstacle`, Nav2 recovery, `Failed to make progress`.
 
-## 11.10 Test 9: Metallklassifisering
+## 11.10 Test 9: Metallklassifisering (fysisk bench, offline)
 
-Triad burst + RF-prediksjon; rapporter metrikker / live-score.
+**Fremgangsmåte:** `collect_triad_burst.py` → `scripts/predict.py` (ikke ROS ML-pakker).  
+**Forventet:** Riktig `label_object` med confidence over terskel.  
+**Faktisk / vurdering:** *(fyll inn — se `bachelor_rapport_maskinlaering_utkast.md` test 10e)*
 
 ---
 
@@ -664,7 +679,7 @@ Digital tvilling **dekker verifikasjon** av kartlegging, manøvrering og 3D-mode
 | 15.5 | Bedre frontier scoring | Ikke bare nærmeste frontier |
 | 15.6 | Multi-robot | Utenfor V1, mulig utvidelse |
 | 15.7 | Integrasjon mot fysisk robot | `dynamixel_driver`, RealSense |
-| 15.8 | Forbedret metallgjenkjenning | Mer data, bedre features |
+| 15.8 | Forbedret metallgjenkjenning | Mer data; ev. gjenopprett/implementer ROS ML fra arkiv eller mission-node |
 | 15.9 | Lavatunnel / georadar-sim | Fremtidig vitenskapelig modul |
 
 Formuler som **naturlig videreutvikling**, ikke som «vi rakk ikke».

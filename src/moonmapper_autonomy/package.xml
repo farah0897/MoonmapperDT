@@ -3,7 +3,7 @@
 <package format="3">
   <name>moonmapper_autonomy</name>
   <version>0.1.0</version>
-  <description>Simple autonomy behaviors for MoonMapper (safety gate, stepwise).</description>
+  <description>Depth-to-scan and safety gating for Nav2 RTAB-Map stack (active nodes only).</description>
   <maintainer email="user@example.com">MoonMapper Team</maintainer>
   <license>Apache-2.0</license>
 

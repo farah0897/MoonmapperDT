@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="moonmapper_gz">
   <!-- Args som brukes i denne fila maa komme FOER include (xacro-rekkefoelge). -->
-  <xacro:arg name="enable_triad_spectroscopy" default="true"/>
+  <xacro:arg name="enable_triad_spectroscopy" default="false"/>
   <!-- Rocker-diff plugin: weak=standard Gazebo; full=stivere PD; off=diagnose (passiv URDF, ikke normal kjøring). -->
   <xacro:arg name="rocker_diff_coupling_mode" default="weak"/>
   <xacro:arg name="rocker_diff_debug" default="false"/>
@@ -216,9 +216,7 @@
       <publish_visual_pose>false</publish_visual_pose>
       <publish_nested_model_pose>true</publish_nested_model_pose>
     </plugin>
-    <!-- ========================================================= -->
-    <!-- Level 1: Synthetic Triad spectroscopy sensors (raycast) -->
-    <!-- ========================================================= -->
+    <!-- Synthetic Triad (moonmapper_gz_sensors) — arkivert; enable_triad_spectroscopy:=true krever gjenopprettet pakke -->
     <xacro:if value="$(arg enable_triad_spectroscopy)">
       <plugin filename="libmoonmapper_triad_spectroscopy.so" name="moonmapper::TriadSpectroscopy">
         <enable>true</enable>

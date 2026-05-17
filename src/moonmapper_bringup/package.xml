@@ -3,32 +3,20 @@
 <package format="3">
   <name>moonmapper_bringup</name>
   <version>0.1.0</version>
-  <description>Launch files for MoonMapper rover simulation and bringup</description>
+  <description>Gazebo sim bringup (sim_rover_clean) and cmd_vel_odom_relay for MoonMapper.</description>
   <maintainer email="user@example.com">MoonMapper Team</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake_python</buildtool_depend>
 
   <depend>moonmapper_description</depend>
-  <depend>moonmapper_webots</depend>
-  <depend>moonmapper_control</depend>
-  <depend>moonmapper_localization</depend>
-  <depend>moonmapper_slam</depend>
-  <depend>robot_state_publisher</depend>
-  <depend>rviz2</depend>
-  <depend>xacro</depend>
 
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>launch</exec_depend>
 
   <exec_depend>rclpy</exec_depend>
-  <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
-  <exec_depend>rosgraph_msgs</exec_depend>
   <exec_depend>nav_msgs</exec_depend>
-  <exec_depend>tf2_ros</exec_depend>
-  <exec_depend>realsense2_camera</exec_depend>
-  <exec_depend>moonmapper_nav2</exec_depend>
 
   <export>
     <build_type>ament_python</build_type>

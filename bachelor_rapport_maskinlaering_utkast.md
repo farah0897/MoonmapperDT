@@ -28,7 +28,7 @@
 | Datakilde | Simulerte kamera/IMU | Fysiske spektrometer (primært) |
 | Formål | Autonom kjøring | Materialklassifisering |
 | Algoritme | RTAB-Map, Nav2, frontier | Random Forest på tabulære features |
-| Modenhet | Kjørende V1 | Pipeline ferdig offline; ROS runtime delvis |
+| Modenhet | Kjørende V1 | Pipeline ferdig offline; ROS ML-pakker arkivert |
 
 ## Spektral reflektans og edle metaller
 
@@ -74,7 +74,7 @@ Ved ubalanse (få titan-prøver) er **F1 per klasse** viktigere enn ren accuracy
 | 2 | Definere og beregne features fra 36-kanals spekter | Implementert |
 | 3 | Trene og evaluere Random Forest | Implementert (offline) |
 | 4 | Live-prediksjon fra nye råfiler | `scripts/predict.py` |
-| 5 | ROS 2 inferens i sanntid | Planlagt (`ml_inference_node`) |
+| 5 | ROS 2 inferens i sanntid | **Ikke i aktiv stack** (pakker arkivert; se `arkiverte_koder/gamle_ros_pakker/`) |
 | 6 | Koble til vitenskapelig mål (edle metaller) | Delvis — krever flerklasse-data |
 
 ## Kravsporing (ML-relevant)
@@ -84,7 +84,7 @@ Ved ubalanse (få titan-prøver) er **F1 per klasse** viktigere enn ren accuracy
 | Sensorer for materialanalyse | Triad 2×18 kanaler | Hardware + CSV + features |
 | Dokumentert metode | Denne rapporten + `maskinlaering.md` | Kap. 10 |
 | Fungerende klassifisering | RF + evaluering | Test 11.10, confusion matrix |
-| Integrasjon i system | ROS-meldinger definert | `TriadFeatures`, `MaterialClassification` |
+| Integrasjon i system | Offline pipeline + planlagt ROS | `predict.py`; meldinger i arkivert `moonmapper_interfaces` |
 
 ---
 
@@ -99,7 +99,7 @@ flowchart TD
   C --> D[train_random_forest.py]
   D --> E[evaluate_model.py]
   E --> F[predict.py live]
-  D --> G[ml_inference_node ROS]
+  D --> G[ROS ML arkivert]
 ```
 
 ## Verktøy
@@ -109,7 +109,7 @@ flowchart TD
 | Arduino IDE + `moonmapper_triad_logger.ino` | Rådata |
 | Python 3 + NumPy, pandas, scikit-learn, joblib | ML |
 | `collect_triad_burst.py` | PC-innsamling |
-| RViz / Gazebo | Kun for syntetisk triad-test — ikke treningskilde |
+| Gazebo syntetisk Triad | Arkivert (`moonmapper_gz_sensors`) — **ikke** treningskilde |
 | Git | Versjonering av metadata og scripts |
 | Cursor AI | Støtte til scripts og dokumentasjon — **all funksjonalitet testet manuelt** |
 
@@ -152,7 +152,7 @@ Dokumenter for hver klasse:
                               └──────────┬───────────┘
                     ┌────────────────────┼────────────────────┐
                     ▼                    ▼                    ▼
-            evaluate_model.py    predict.py          ml_inference_node
+            evaluate_model.py    predict.py          (ROS ML arkivert)
             (test.csv)           (live raw)          (ROS, TODO)
 ```
 
@@ -244,18 +244,15 @@ python scripts/predict.py --raw ml/datasets/live/T0001_triad_raw.csv
 | **Faktisk** | *(f.eks. 7/8 riktige over manuell test)* |
 | **Vurdering** | |
 
-## Test 10f: ROS ml_inference_node
+## Test 10f: ROS sanntid (arkivert — valgfri fremtid)
 
-```bash
-ros2 run moonmapper_ml ml_inference_node
-```
+Pakker `moonmapper_ml`, `moonmapper_perception`, `moonmapper_interfaces` ligger i `arkiverte_koder/gamle_ros_pakker/`. **Ikke krav for V1.**
 
 | Felt | Innhold |
 |------|---------|
-| **Formål** | Node starter og laster modell hvis `.joblib` finnes |
-| **Forventet** | Logg «Loaded model» |
-| **Faktisk** | Placeholder — ingen `/triad/features` ennå |
-| **Vurdering** | Delvis — infrastruktur på plass |
+| **Formål** | Sanntid `TriadRaw` → `TriadFeatures` → `MaterialClassification` |
+| **Status** | Placeholder-noder; ikke bygget i aktiv workspace |
+| **Vurdering** | N/A for bachelor V1 — bruk test 10e (`predict.py`) |
 
 ---
 
@@ -273,7 +270,7 @@ ros2 run moonmapper_ml ml_inference_node
 | Evaluering test-sett | *(status)* | confusion matrix PNG |
 | Flerklasse-datasett | **Pågår** | Kun `stål_kule` i nåværende metadata (52 prøver) |
 | Live predict | Fungerer | `predict.py` |
-| ROS sanntid | Planlagt | `ml_inference_node` TODO |
+| ROS sanntid | Arkivert | Gjenopprett fra `gamle_ros_pakker/` ved behov |
 
 ## Tabell: datasett (repo-status mai 2026)
 
@@ -307,7 +304,7 @@ ros2 run moonmapper_ml ml_inference_node
 - Lite datasett og risiko for **overfitting** ved mange features
 - Nåværende metadata er **enkeltklasse** — flerklasse-resultater må dokumenteres når data finnes
 - SAM-referanser fra hele datasettet før split (metodisk forbedringspunkt)
-- ROS-runtime ikke ferdig — ML er i praksis **offline V1**
+- ROS ML-pakker arkivert — leveranse er **offline V1** (`predict.py`)
 
 ## Sammenheng med krav
 
@@ -329,10 +326,10 @@ ML-delen støtter krav om **sensorer** og **materialforståelse**, ikke direkte 
 
 1. **Utviklet:** Komplett offline-pipeline (innsamling → features → RF → evaluering → live predict).
 2. **Fungerer:** Feature-ekstraksjon, trening, prediksjon på nye råfiler.
-3. **Fungerer delvis:** Flerklasse-evaluering avhenger av mer data; ROS sanntid mangler.
-4. **Videre:** Mer data (aluminium, jern, titan), group-split, ferdig `ml_inference_node`, feltkalibrering på rover.
+3. **Fungerer delvis:** Flerklasse-evaluering avhenger av mer data.
+4. **Videre:** Mer data (aluminium, jern, titan), group-split, feltkalibrering; ev. gjenopprett/implementer ROS ML fra arkiv.
 
-**Svar på ML-problemstillingen:** Spektrale Triad-data *kan* brukes til klassifisering med Random Forest når treningsdata dekker variasjon i lys og geometri; integrasjon i ROS er forberedt men ikke fullført i V1.
+**Svar på ML-problemstillingen:** Spektrale Triad-data *kan* brukes til klassifisering med Random Forest når treningsdata dekker variasjon i lys og geometri; **verifisert offline**; sanntid i ROS er planlagt (arkivert skall).
 
 ---
 
@@ -343,11 +340,12 @@ ML-delen støtter krav om **sensorer** og **materialforståelse**, ikke direkte 
 | 1 | Samle balansert datasett for alle fire `label_object` |
 | 2 | Group-aware split på `run_id` |
 | 3 | SAM-referanser kun fra train |
-| 4 | Fullfør `triad_serial_node` + feature-node + `ml_inference_node` |
+| 4 | Gjenopprett ROS-pakker fra arkiv og implementer serial → features → inferens |
 | 5 | Feature alignment: ROS-vektor = trening (ratios, SAM, deriv) |
-| 6 | Mer data → vurdere 1D-CNN eller XGBoost sammenligning |
-| 7 | Validering på regolith med nedgravde objekter (`buried_level`) |
-| 8 | Koble `MaterialClassification` til explorer («stopp ved høy confidence på metall X») |
+| 6 | Mission: kjør → skann → klassifiser (Nav2 + `collect_triad_burst` + `predict.py`) |
+| 7 | Mer data → vurdere 1D-CNN eller XGBoost |
+| 8 | Validering på regolith med nedgravde objekter (`buried_level`) |
+| 9 | Koble klassifisering til explorer («stopp ved høy confidence på metall X») |
 
 ---
 

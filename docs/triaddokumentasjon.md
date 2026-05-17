@@ -44,9 +44,9 @@ Typisk flyt i prosjektet:
 2. **PC / Python** tar inn CSV-filene og gjør feature-ekstraksjon og trening:
    - `ml/training/extract_triad_features.py` (bygger numeriske features fra rå burst)
    - `ml/training/train_random_forest.py` (trener modell)
-3. **ROS runtime** (under `src/moonmapper_ml/`) laster ferdig modell og gjør prediksjon i sanntid.
+3. **Inferens:** `scripts/predict.py` (offline). ROS-pakker `moonmapper_ml` / `moonmapper_interfaces` / `moonmapper_perception` er arkivert under `arkiverte_koder/gamle_ros_pakker/`.
 
-I praksis: Arduino = “sensor → tall”, Python/ROS = “tall → features → modell → klasse”.
+I praksis: Arduino = “sensor → tall”, Python = “tall → features → modell → klasse”.
 
 ---
 

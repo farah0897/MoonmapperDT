@@ -12,10 +12,10 @@ MoonMapper-prosjektet skal kunne skille materialer som er relevante for edle met
 
 Pipeline er delt i:
 
-1. **Datainnsamling** (Arduino + PC, eller syntetisk/Gazebo)
+1. **Datainnsamling** (Arduino + PC via `collect_triad_burst.py`)
 2. **Feature-ekstraksjon** (burst → én rad med ~190 numeriske features)
 3. **Trening / evaluering** (train/val/test, `.joblib`)
-4. **Inferens** (Python `scripts/predict.py`; ROS 2 `moonmapper_ml` — delvis placeholder)
+4. **Inferens** (Python `scripts/predict.py`; ROS 2-pakker arkivert under `arkiverte_koder/gamle_ros_pakker/`)
 
 ---
 
@@ -23,30 +23,30 @@ Pipeline er delt i:
 
 ```mermaid
 flowchart LR
-  subgraph hw["Hardware / sim"]
+  subgraph hw["Fysisk hardware"]
     ARD["Arduino triad_logger"]
     MUX["Qwiic Mux 2× AS7265X"]
-    GZ["Gazebo TriadSpectroscopy"]
   end
   subgraph data["Data"]
+    COL["collect_triad_burst.py"]
     RAW["ml/datasets/raw/*.csv"]
     META["metadata.csv"]
   end
-  subgraph ml["Offline ML"]
+  subgraph ml["Offline ML aktiv"]
     EXT["extract_triad_features.py"]
     FEAT["triad_features.csv"]
     SPL["split_dataset.py"]
     TRN["train_random_forest.py"]
     EVA["evaluate_model.py"]
+    PRD["scripts/predict.py"]
     JOB["ml/models/*.joblib"]
   end
-  subgraph ros["ROS 2 (planlagt)"]
-    SER["triad_serial_node"]
-    INF["ml_inference_node"]
+  subgraph arch["Arkivert ROS 2"]
+    ROS["moonmapper_interfaces / perception / ml"]
   end
   MUX --> ARD
-  ARD --> RAW
-  GZ -.->|syntetisk| RAW
+  ARD --> COL
+  COL --> RAW
   RAW --> EXT
   META --> EXT
   EXT --> FEAT
@@ -54,8 +54,8 @@ flowchart LR
   SPL --> TRN
   TRN --> JOB
   JOB --> EVA
-  JOB --> INF
-  SER -.-> INF
+  JOB --> PRD
+  JOB -.->|fremtid| ROS
 ```
 
 ---
@@ -300,7 +300,7 @@ python ml/training/train_random_forest.py \
 | `ml/models/random_forest.joblib` | Trenet modell |
 | `ml/models/label_encoder.joblib` | `LabelEncoder` (tekst → klasseindeks) |
 
-Kopier til ROS ved behov: `src/moonmapper_ml/models/` (se `models/README.md` — store filer bør ikke committes).
+Modellfiler: `ml/models/` (kopier/symlink ved behov; ingen aktiv ROS-pakke).
 
 ---
 
@@ -341,33 +341,15 @@ python scripts/predict.py --raw ml/datasets/live/T0001_triad_raw.csv
 
 ## 10.9 Integrasjon mot ROS 2
 
-### Meldinger (`moonmapper_interfaces`)
+### ROS 2 (arkivert)
 
-| Melding | Status | Innhold |
-|---------|--------|---------|
-| `TriadRaw.msg` | Definert | Rå burst (planlagt fra serial) |
-| `TriadFeatures.msg` | Definert | `mean_36`, `std_36`, `min_36`, `max_36`, RMS |
-| `MaterialClassification.msg` | Definert | `predicted_class`, `confidence`, `probabilities` |
+Meldinger og placeholder-noder ligger i `arkiverte_koder/gamle_ros_pakker/` (`moonmapper_interfaces`, `moonmapper_perception`, `moonmapper_ml`). Ikke bygget i aktiv `colcon`-stack.
 
-### Pakker
-
-| Node | Fil | Status |
-|------|-----|--------|
-| `triad_serial_node` | `moonmapper_perception/triad_serial_node.py` | **Placeholder** — skal lese serial, publisere `TriadRaw` |
-| `ml_inference_node` | `moonmapper_ml/inference_node.py` | **Placeholder** — laster `.joblib`, TODO: `/triad/features` → `/ml/triad_classification` |
-| `feature_utils.py` | Konvertering msg → vektor | Delvis — mangler ratios/derivatives/SAM i ROS-vektor |
-
-### Gazebo (syntetisk spektrum)
-
-`moonmapper_gz_sensors`: plugin `TriadSpectroscopy` raycaster mot `triad_material_map.yaml` → topics `/triad_sensor_1/spectrum`, `/triad_sensor_2/spectrum`.  
-Brukes til **Level-1 sensor-test**, ikke direkte som treningsdata for RF-modellen (skille sim vs bench-data i rapporten).
-
-### Planlagt runtime-flyt
+### Aktiv fysisk ML-flyt (offline)
 
 ```
-Arduino → triad_serial_node → TriadRaw
-       → (feature_node?) → TriadFeatures
-       → ml_inference_node → MaterialClassification
+Arduino → collect_triad_burst.py → *_triad_raw.csv
+       → extract_triad_features (ved predict) → scripts/predict.py → klasse
 ```
 
 ---
@@ -422,7 +404,7 @@ Arduino → triad_serial_node → TriadRaw
 | [`docs/collect_triad_burst.md`](docs/collect_triad_burst.md) | Innsamlingsguide |
 | [`ml/training/extract_triad_features.py`](ml/training/extract_triad_features.py) | Feature-definisjoner |
 | [`scripts/predict.py`](scripts/predict.py) | Live inferens |
-| [`src/moonmapper_description/Level1_Sensors.md`](src/moonmapper_description/Level1_Sensors.md) | Gazebo triad-topics |
+| [`arkiverte_koder/gamle_dokumentasjon_utkast/moonmapper_description/Level1_Sensors.md`](arkiverte_koder/gamle_dokumentasjon_utkast/moonmapper_description/Level1_Sensors.md) | Gazebo triad-topics |
 
 ---
 

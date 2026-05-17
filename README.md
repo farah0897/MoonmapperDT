@@ -1,51 +1,117 @@
-# MoonMapper (ROS 2)
+# MoonMapper — ROS 2 workspace (bachelor)
 
-MoonMapper er ryddet tilbake til en **basis-simulering**:
+MoonMapper er en simulert rover-plattform for **autonom utforskning**, **kartlegging (RTAB-Map)** og **Nav2** i Gazebo Sim. **Triad + ML** (fysisk robot) ligger i `ml/`, `arduino/`, `scripts/predict.py` — ROS ML-pakker er arkivert.
 
-- Robotmodell (URDF/Xacro, mesh)
-- Gazebo Sim
-- `ros2_control` med `diff_drive_controller` og `joint_state_broadcaster`
-- Sensorbroer (kamera/IMU m.m.) via `ros_gz_bridge`
-- Enkel manuell kjøring (teleop eller direkte `cmd_vel`)
+Gamle, eksperimentelle og dupliserte filer er flyttet til **`arkiverte_koder/`** (ingenting slettet). Se `CLEANUP_REPORT.md` og `arkiverte_koder/README.md`.
 
-**Navigasjon (Nav2), UWB, EKF-eksperiment og tilhørende debug-verktøy er fjernet** og skal reimplementeres senere fra bunnen av.
+---
 
-## Anbefalt start (Gazebo)
+## Aktive ROS 2-pakker (`src/`)
 
-Bygg og source:
+| Pakke | Rolle |
+|-------|--------|
+| `moonmapper_description` | URDF/Xacro, Gazebo-verdener, `gazebo_rover` |
+| `moonmapper_bringup` | `sim_rover_clean`, `cmd_vel_odom_relay` |
+| ~~`moonmapper_gz_sensors`~~ | Arkivert — syntetisk Triad Gazebo-plugin (`arkiverte_koder/gamle_ros_pakker/`) |
+| `moonmapper_autonomy` | `depth_to_scan_node`, `safety_obstacle_node` (aktive; øvrige noder i arkiv) |
+| `moonmapper_nav2` | RTAB-Map + Nav2 + `frontier_explorer` |
+| ~~`moonmapper_interfaces`~~ | Arkivert — Triad/ML-meldinger (`gamle_ros_pakker/`) |
+| ~~`moonmapper_msgs`~~ | Arkivert — `TriadSpectrum` (kun sim-plugin) |
+| ~~`moonmapper_localization`~~ | Arkivert — legacy EKF-yaml (`arkiverte_koder/gamle_ros_pakker/`) |
+| ~~`moonmapper_ml`~~ | Arkivert — placeholder `ml_inference_node` |
+| ~~`moonmapper_perception`~~ | Arkivert — placeholder serial/feature-noder |
+
+---
+
+## Bygg
 
 ```bash
-cd /path/to/moonmapper_ws
+cd moonmapper_ws
+source /opt/ros/jazzy/setup.bash
 colcon build --symlink-install
 source install/setup.bash
 ```
 
-Start ren sim (ingen Nav2, ingen EKF/UWB):
+---
+
+## Anbefalt kjøring
+
+### 1. Ren sim (Gazebo + sensorer)
 
 ```bash
 ros2 launch moonmapper_bringup sim_rover_clean.launch.py use_sim_time:=true
 ```
 
-### Validering
-
-- **Topics:** `ros2 topic list` — forvent bl.a. `/joint_states`, `/diff_drive_controller/odom`, `/clock`.
-- **Kontrollere:** `ros2 control list_controllers` og `ros2 control list_hardware_interfaces`.
-- **Direkte kjøring (Jazzy `TwistStamped`):**
+### 2. Full autonom utforskning (sim + RTAB-Map + Nav2 + frontier)
 
 ```bash
-ros2 topic pub --once /diff_drive_controller/cmd_vel geometry_msgs/msg/TwistStamped "{header: {frame_id: base_link}, twist: {linear: {x: 0.08}, angular: {z: 0.0}}}"
+ros2 launch moonmapper_nav2 autonomous_exploration_full.launch.py \
+  use_sim_time:=true world_preset:=earth_explore \
+  start_sim:=true start_slam:=true start_nav2:=true start_explorer:=true \
+  navigation_stack_delay:=12.0 explorer_extra_delay_sec:=5.0
 ```
 
-- **Odom:** `ros2 topic echo /diff_drive_controller/odom --once`
+Helsesjekk (annet terminalvindu):
 
-Alternativt teleop (se docstring i `gazebo_rover.launch.py` for `teleop_twist_keyboard` med `stamped:=true`).
+```bash
+ros2 run moonmapper_nav2 check_autonomous_exploration_stack.sh
+```
 
-## Andre launch-filer
+### 3. ML / Triad (offline)
 
-- `moonmapper_description/launch/gazebo_rover.launch.py` — full Gazebo-oppsett (valgfritt `use_ekf:=true` bruker `moonmapper_description/config/ekf_wheel_odom.yaml` for hjul-odom EKF).
-- `moonmapper_bringup/launch/sensor_bringup.launch.py` — tynn wrapper mot `gazebo_rover` (standard verden + RViz).
-- `moonmapper_bringup/launch/sim.launch.py` — **Webots**-sim med valgfri EKF/SLAM (ikke Gazebo).
+```bash
+pip install -r requirements-ml.txt
+python ml/training/extract_triad_features.py --metadata ml/datasets/metadata.csv --raw-dir ml/datasets
+python ml/training/train_random_forest.py --input ml/datasets/processed/train.csv --train-all
+python scripts/predict.py --raw ml/datasets/live/T0001_triad_raw.csv
+```
 
-## Mer dokumentasjon
+Se `maskinlaering.md` og `docs/triaddokumentasjon.md`.
 
-Se `Kodedokumentasjone.md` og `docs/` for øvrig prosjektbeskrivelse.
+---
+
+## Viktige filer og dokumentasjon
+
+| Fil | Innhold |
+|-----|---------|
+| `digital_tvilling.md` | Teknisk kap. 6 — Gazebo, URDF, sensorer, cmd_vel |
+| `maskinlaering.md` | Teknisk kap. 10 — Triad, features, Random Forest |
+| `bachelor_rapport_utkast.md` | Rapportstruktur (navigasjon/sim) |
+| `bachelor_rapport_maskinlaering_utkast.md` | Rapportstruktur (ML) |
+| `CLEANUP_REPORT.md` | Oppryddingslogg |
+
+---
+
+## Mapper utenfor `src/`
+
+| Mappe | Rolle |
+|-------|--------|
+| `ml/` | Datasett, trening, modeller |
+| `scripts/` | `predict.py`, feature-ekstraksjon |
+| `docs/` | Triad-dokumentasjon |
+| `arduino/` | Datainnsamling Triad |
+| `arkiverte_koder/` | Arkivert historikk |
+
+---
+
+## Verdener (`world_preset`)
+
+| Preset | SDF |
+|--------|-----|
+| `earth_explore` | `earth_arena_explore.sdf` (anbefalt for utforskning) |
+| `earth` | `earth_arena.sdf` |
+| `moon` | `moon_arena.sdf` |
+
+---
+
+## Validering etter opprydding
+
+```bash
+colcon build --symlink-install
+source install/setup.bash
+ros2 launch moonmapper_bringup sim_rover_clean.launch.py use_sim_time:=true
+# annet vindu:
+ros2 launch moonmapper_nav2 autonomous_exploration_full.launch.py \
+  use_sim_time:=true world_preset:=earth_explore \
+  start_sim:=true start_slam:=true start_nav2:=true start_explorer:=true
+```
